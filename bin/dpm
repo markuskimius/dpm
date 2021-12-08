@@ -1,0 +1,1030 @@
+#!/bin/bash
+
+##############################################################################
+# Distributed Package Manager
+# https://github.com/markuskimius/dpm
+#
+# Copyright (c)2021 Mark K. Kim
+# Released under GNU General Public License version 2.
+# https://github.com/markuskimius/dpm/blob/main/LICENSE
+##############################################################################
+
+function usage() {
+    cat <<EOF
+Usage: ${SCRIPTNAME} COMMAND [ARGUMENTS]
+
+COMMAND:
+  install [-b,--branch=BRANCH] URL [PKGNAME]
+                        Install PKGNAME from URL and its dependencies, if any.
+                        If PKGNAME is omitted, a name is chosen based on the
+                        URL.
+
+  remove PKGNAME        Remove PKGNAME and any of its unused dependencies.
+
+  update [PKGNAME]      Update PKGNAME.  If PKGNAME is omitted, all packages
+                        are updated.
+
+  list                  List installed packages.
+
+  sourceme              Source this output to setup BASH.
+
+FILES:
+  Config files:$(printf "\n    %s" "${CONFIGS[@]}")
+
+EOF
+}
+
+
+##############################################################################
+# PROGRAM BEGINS HERE
+
+SCRIPTNAME=$(basename -- "$0")
+SCRIPTPATH=$0
+SCRIPTARGV=( "$@" )
+PKGDIR=${HOME}/dpm
+HANDLERS=( git )
+CONFIGS=(
+    ~/.dpmrc
+    /usr/local/etc/dpmrc
+    /usr/etc/dpmrc
+    /etc/dpmrc
+)
+
+
+function main() {
+    local action=( usage )
+    local lock=0
+    local isok=1
+
+    #
+    # Initialize.  Note that lock-pkgdir may restart the script so any code
+    # that runs before it must be idempotent.
+    #
+    # load-config and ensure-deps must run before lock-pkgdir because
+    # lock-pkgdir depends on them.
+    #
+    load-config || exit 1
+    ensure-deps || exit 1
+
+    # Check arguments
+    case "${1-}" in
+        install)      shift && action=( dpm-install --recursive --direct ) && lock=1 ;;
+        remove)       shift && action=( dpm-remove --recursive --direct  ) && lock=1 ;;
+        update)       shift && action=( dpm-update                       ) && lock=1 ;;
+        list)         shift && action=( dpm-list                         ) && lock=1 ;;
+        sourceme)     shift && action=( dpm-sourceme                     ) ;;
+        help)         shift && action=( usage                            ) ;;
+        *)            logger FAIL "${1-(none)}: Invalid COMMAND"
+                      isok=0
+                      ;;
+    esac
+
+    # Sanity check
+    if (( ! isok )); then
+        usage 1>&2
+        exit 1
+    fi
+
+    # Lock
+    if (( lock )); then
+        lock-pkgdir || exit 1
+    fi
+
+    "${action[@]}" "$@"
+}
+
+
+function load-config() {
+    local isok=1
+    local file
+
+    # Defaults
+    set -o pipefail
+
+    # Clear globals
+    LOGGER_INDENT=0
+    DEPDATA=
+
+    # Source the first file found in CONFIG[], if any
+    for file in "${CONFIGS[@]}"; do
+        if [[ -e "$file" ]]; then
+            source "$file" || isok=0
+            break
+        fi
+    done
+
+    (( isok ))
+}
+
+
+function ensure-deps() {
+    local handler
+    local isok=1
+
+    # Check for awk
+    if ! command -v awk >/dev/null; then
+        logger FAIL "Please install awk."
+        isok=0
+    fi
+
+    # Check for flock or shlock
+    if ! command -v flock >/dev/null && ! command -v shlock >/dev/null; then
+        logger FAIL "Please install flock or shlock."
+        isok=0
+    fi
+
+    # Check for handler dependencies
+    for handler in "${HANDLERS[@]}"; do
+        local depfn="${handler}-testdeps"
+
+        if ! command -v "$depfn" >/dev/null; then
+            logger FAIL "${handler}: Bad handler" && isok=0
+            continue
+        fi
+
+        "$depfn" || isok=0
+    done
+
+    # Ensure $PKGDIR exists
+    if [[ ! -d "$PKGDIR" ]] && ! mkdir -p "$PKGDIR" 2>/dev/null; then
+        logger FAIL "Unable to create $PKGDIR"
+        isok=0
+    fi
+
+    # Ensure the dependency file exists
+    if [[ ! -w "${PKGDIR}/.dependency" ]] && ! touch "${PKGDIR}/.dependency" 2>/dev/null; then
+        logger FAIL "Unable to create ${PKGDIR}/.dependency"
+        isok=0
+    fi
+
+    (( isok ))
+}
+
+
+function lock-pkgdir() {
+    local lockfile="${PKGDIR}/.lock"
+    local locked=0
+
+    #
+    # 'flock' is preferred but (1) it requires restarting the script and (2) it
+    # may not be available on some systems.  This script must be written such
+    # that (1) is not an issue.
+    #
+    # As for (2), we fall back on 'shlock' if 'flock' is not available.
+    # 'shlock' is less preferred because it may run into a race condition on
+    # some platforms.  Also, as with 'flock', it may not be available on some
+    # systems.
+    #
+
+    if command -v flock >/dev/null; then
+        if [[ "$FLOCKER" == "$lockfile" ]]; then
+            locked=1
+        else
+            export FLOCKER=$lockfile
+            exec flock "$lockfile" "$SCRIPTPATH" "${SCRIPTARGV[@]}"
+        fi
+    elif command -v shlock >/dev/null; then
+        while true; do
+            shlock -p $$ -f "$lockfile" && locked=1 && break
+            sleep 1
+        done
+    else
+        logger FAIL "No locking command available"
+    fi
+
+    (( locked ))
+}
+
+
+##############################################################################
+# ACTIONS
+
+function dpm-install() {
+    local optstring url pkgname handler
+    local direct=0 recursive=0 trackback="" branch=""
+    local unwind=0
+
+    # Parse arguments
+    optstring=$(egetopt "drt:b:" "direct,recursive,trackback:,branch:" "$@") || return 1
+    eval set -- "$optstring"
+
+    while (( $# )); do
+        [[ "$1" == "--" ]] && shift && break
+
+        case "$1" in
+            -d|--direct)    direct=1              ;;
+            -r|--recursive) recursive=1           ;;
+            -t|--trackback) trackback=$2 && shift ;;
+            -b|--branch)    branch=$2 && shift    ;;
+        esac
+
+        shift
+    done
+
+    # Optionless arguments
+    url=$1
+    pkgname=${2-}
+    handler=$(url-gethandler "$url")
+
+    if [[ -z "$pkgname" && -n "$handler" && -n "$url" ]]; then
+        pkgname=$("${handler}-urlpkg" "$url")
+    fi
+
+    # Allow an already-installed package be marked as direct-installed by pkgname
+    if [[ -z "$pkgname" ]] && pkg-isinstalled "$url" && (( direct )); then
+        pkgname=$url
+        url=$(pkg-geturl "$pkgname")
+        branch=$(pkg-getbranch "$pkgname")
+        handler=$(url-gethandler "$url")
+    fi
+
+    if [[ -z "$branch" ]]; then
+        unset branch
+    fi
+
+    # Sanity check
+    [[ -z "$url"     ]] && logger FAIL "Must specify URL." && return 1
+    [[ -z "$pkgname" ]] && logger FAIL "Cannot deduce PKGNAME." && return 1
+    [[ -z "$handler" ]] && logger FAIL "${url}: Cannot identify handler for URL." && return 1
+
+    # Notification
+    logger INFO "INSTALL '${pkgname}' from ${url}${branch+ branch }${branch-} to ${PKGDIR}/${pkgname} ..."
+
+    # Don't allow a package to be direct-installed more than once
+    if pkg-isinstalled "$pkgname" && (( direct )) && [[ "$(depfile-getflags "$pkgname")" == *D* ]]; then
+        logger INFO "${pkgname}: Already direct-installed."
+        return 0
+    fi
+
+    # Don't allow circular dependency
+    if [[ "|${trackback}|" == *"|${pkgname}|"* ]]; then
+        logger FAIL "${pkgname}: FAILED to install, circular dependency."
+        return 1
+    fi
+
+    # Install the package
+    if pkg-isinstalled "$pkgname"; then
+        local installed_url=$(pkg-geturl "$pkgname")
+        local installed_branch=$(pkg-getbranch "$pkgname")
+
+        if [[ "$url" == "$installed_url" && ( -z "${branch-}" || "${branch-}" == "$installed_branch" ) ]]; then
+            logger INFO "${pkgname}: Already installed."
+        else
+            logger FAIL "${pkgname}: Already installed but from ${installed_url} branch ${installed_branch}, cannot proceed."
+            false
+        fi
+    else
+        "${handler}-install" "$url" "$pkgname" "${branch-}" 2>&1 | logger "${handler^^}"
+    fi || unwind=10
+
+    # Add the installation record
+    if (( ! unwind )); then
+        local flags=()
+
+        if (( direct )); then
+            flags+=( --flags=D )
+        fi
+
+        logger INFO "${pkgname}: Update installation record..."
+        depfile-incr "${flags[@]}" "$pkgname"
+    fi || unwind=20
+
+    # Install the dependencies
+    if (( ! unwind && recursive )); then
+        dpm-install-deps "$pkgname" "${trackback}|${pkgname}"
+    fi || unwind=30
+
+    # Success!
+    if (( ! unwind )); then
+        logger GOOD "${pkgname}: INSTALL SUCCESS!"
+        return 0
+    fi
+
+    # Notification
+    logger FAIL "${pkgname}: FAILED to install."
+
+    # Unwind the recording of how the package was installed
+    if (( unwind > 20 )); then
+        local flags=()
+
+        if (( direct )); then
+            flags=( --flags=D )
+        fi
+
+        logger INFO "${pkgname}: Rollback dependency record..."
+        depfile-decr "${flags[@]}" "$pkgname"
+    fi
+
+    # Unwind the installation
+    if (( unwind >= 10 )) && (( $(depfile-getcount "$pkgname") <= 0 )); then
+        #
+        # Unlike above unwinding routines, this code is executed even if the
+        # handler-install fails because handler-install may be a user-supplied
+        # function that does not fully cleans up after itself.
+        #
+        logger INFO "${pkgname}: Rollback installed files..."
+        [[ -n "$PKGDIR" && -n "$pkgname" ]] && rm -rf "${PKGDIR}/${pkgname}"
+    fi
+
+    return 1
+}
+
+
+function dpm-install-deps() {
+    local pkgname=$1 trackback=$2
+    local depname depurl depbranch
+    local installed=()
+    local unwind=0
+    local count=0
+
+    # Install the dependencies
+    while IFS=\| read -r depname depurl depbranch; do
+        [[ -z "$depbranch" ]] && unset depbranch
+        logger INFO "${pkgname}: Requires '${depname}' from ${depurl}${depbranch+ branch }${depbranch-}:"
+
+        logger-push
+        dpm-install --recursive --trackback="${trackback}" --branch="${depbranch-}" "$depurl" "$depname" \
+        && installed=( "$depname" ) \
+        || unwind=10
+        logger-pop
+
+        # Stop on error
+        (( unwind )) && break
+        (( count += 1 ))
+    done < <(pkg-getdeps "$pkgname")
+
+    # Success!
+    if (( ! unwind )); then
+        return 0
+    fi
+
+    # Unwind the installed packages
+    if (( unwind > 0 && count )); then
+        # Notification
+        logger FAIL "${pkgname}: FAILED to install a dependency, remove already installed dependencies..."
+
+        logger-push
+        for depname in "${installed[@]}"; do
+            dpm-remove --recursive "$depname"
+        done
+        logger-pop
+    fi
+
+    return 1
+}
+
+
+function dpm-remove() {
+    local optstring pkgname
+    local direct=0 recursive=0 trackback=""
+    local isok=1
+
+    # Parse arguments
+    optstring=$(egetopt "drt:" "direct,recursive,trackback:" "$@") || return 1
+    eval set -- "$optstring"
+
+    while (( $# )); do
+        [[ "$1" == "--" ]] && shift && break
+
+        case "$1" in
+            -d|--direct)    direct=1              ;;
+            -r|--recursive) recursive=1           ;;
+            -t|--trackback) trackback=$2 && shift ;;
+        esac
+
+        shift
+    done
+
+    # Sanity check
+    (( ! $# )) && logger FAIL "Must specify at least one PKGNAME" && return 1
+
+    # Remove the package(s)
+    for pkgname in "$@"; do
+        local removeok=1
+
+        # Notification
+        logger INFO "REMOVE '${pkgname}'..."
+
+        # Sanity check
+        if ! pkg-isinstalled "$pkgname"; then
+            logger WARN "${pkgname}: No such package, nothing to remove."
+            continue
+        fi
+
+        # Don't allow a package to be direct-removed if it wasn't direct-installed
+        if (( direct )) && [[ "$(depfile-getflags "$pkgname")" != *D* ]]; then
+            logger FAIL "${pkgname}: Not direct-installed, cannot be direct-removed."
+            isok=0
+            continue
+        fi
+
+        # Don't allow circular dependency
+        if [[ "|${trackback}|" == *"|${pkgname}|"* ]]; then
+            logger FAIL "${pkgname}: FAILED to remove, circular dependency."
+            isok=0
+            continue
+        fi
+
+        # Remove the dependencies
+        if (( recursive )); then
+            dpm-remove-deps "$pkgname" "${trackback}|${pkgname}" \
+            || removeok=0
+
+            (( ! removeok )) && isok=0 && continue
+        fi
+
+        # Remove the installation record
+        if true; then
+            local flags=()
+
+            if (( direct )); then
+                flags+=( --flags=D )
+            fi
+
+            logger INFO "${pkgname}: Remove installation record..."
+            depfile-decr "${flags[@]}" "$pkgname" \
+            || removeok=0
+
+            (( ! removeok )) && isok=0 && continue
+        fi
+
+        # Uninstall the package if needed
+        if (( $(depfile-getcount "$pkgname") <= 0 )); then
+            local url=$(pkg-geturl "$pkgname")
+            local branch=$(pkg-getbranch "$pkgname")
+
+            logger INFO "${pkgname}: Remove installed files from ${url} branch ${branch} ..."
+            [[ -n "$PKGDIR" && -n "$pkgname" ]] && rm -rf "${PKGDIR}/${pkgname}" || removeok=0
+
+            (( ! removeok )) && isok=0 && continue
+        fi
+    done
+
+    # Success!
+    if (( isok )); then
+        logger GOOD "${pkgname}: REMOVE SUCCESS!"
+        return 0
+    fi
+
+    # Notification
+    logger FAIL "${pkgname}: FAILED to remove completely, some record or files may remain."
+
+    return 1
+}
+
+
+function dpm-remove-deps() {
+    local pkgname=$1 trackback=$2
+    local depname depurl depbranch
+    local count=0
+    local isok=1
+
+    # Remove the dependencies
+    while IFS=\| read -r depname depurl depbranch; do
+        logger INFO "${pkgname}: Depends on ${depname}:"
+
+        logger-push
+        dpm-remove --recursive --trackback="${trackback}" "$depname" \
+        || isok=0
+        logger-pop
+
+        (( count += 1 ))
+    done < <(pkg-getdeps "$pkgname")
+
+    (( isok ))
+}
+
+
+function dpm-update() {
+    local pkgname
+    local isok=1
+
+    # Update all packages if no package specified
+    if (( ! $# )); then
+        local packages=()
+        local line
+
+        while IFS= read -r line; do
+            packages+=( "$line" )
+        done < <(installed-list)
+
+        set -- "${packages[@]}"
+    fi
+
+    # Sanity check
+    for pkgname in "$@"; do
+        if ! pkg-isinstalled "$pkgname"; then
+            logger FAIL "${pkgname}: No such package, nothing to update."
+            isok=0
+        fi
+    done
+
+    # Update the packages
+    for pkgname in "$@"; do
+        local handler predeps=() postdeps=()
+        local updateok=1
+        local line
+
+        # Skip packages that have been removed (or never existed and logged already)
+        pkg-isinstalled "$pkgname" || continue
+
+        # Notification
+        logger INFO "UPDATE '${pkgname}'..."
+
+        handler=$(pkg-gethandler "$pkgname")
+        if [[ -z "$handler" ]]; then
+            logger FAIL "${pkgname}: Cannot identify handler."
+            isok=0
+            continue
+        fi
+
+        # Get the list of dependencies before update
+        while IFS= read -r line; do
+            predeps+=( "$line" )
+        done < <(pkg-getdeps "$pkgname")
+
+        # Update the package
+        logger INFO "${pkgname}: Updating..."
+        "${handler}-update" "$pkgname" 2>&1 | logger "${handler^^}" \
+        || updateok=0
+
+        # Get the list of dependencies after update
+        while IFS= read -r line; do
+            postdeps+=( "$line" )
+        done < <(pkg-getdeps "$pkgname")
+
+        # Install new dependencies
+        if (( updateok )); then
+            for line in "${postdeps[@]}"; do
+                if [[ " ${predeps[@]} " != *" $line "* ]]; then
+                    local depurl depname depbranch
+                    IFS=\| read -r depname depurl depbranch <<<"$line"
+
+                    logger INFO "${pkgname}: Now requires '${depname}' from ${depurl} branch ${depbranch}:"
+
+                    logger-push
+                    dpm-install --recursive --trackback="$pkgname" --branch="$depbranch" "$depurl" "$depname" \
+                    || updateok=0
+                    logger-pop
+                fi
+
+                (( ! updateok )) && break
+            done
+        fi
+
+        # Remove oudated dependencies
+        if (( updateok )); then
+            for line in "${predeps[@]}"; do
+                if [[ " ${postdeps[@]} " != *" $line "* ]]; then
+                    local depurl depname depbranch
+                    IFS=\| read -r depname depurl depbranch <<<"$line"
+
+                    logger INFO "${pkgname}: No longer requires '${depname}':"
+
+                    logger-push
+                    dpm-remove --recursive --trackback="$pkgname" "$depname" \
+                    || updateok=0
+                    logger-pop
+                fi
+            done
+        fi
+
+        if (( updateok )); then
+            logger GOOD "${pkgname}: UPDATE SUCCESS!"
+        else
+            logger FAIL "${pkgname}: FAILED to update."
+            isok=0
+        fi
+    done
+
+    (( isok ))
+}
+
+
+function dpm-list() {
+    local format="%15s  %8s  %-8s  %-8s  %s\n"
+    local pkgname
+
+    # Header
+    printf "$format" "PACKAGE" "USAGE" "FLAGS" "BRANCH" "URL"
+    printf "$format" "-------" "-----" "-----" "------" "---"
+
+    # Package list
+    while IFS= read -r pkgname; do
+        local depcount=$(depfile-getcount "$pkgname")
+        local flags=$(depfile-getflags "$pkgname")
+        local url=$(pkg-geturl "$pkgname")
+        local branch=$(pkg-getbranch "$pkgname")
+
+        printf "$format" "$pkgname" "$depcount" "$flags" "$branch" "$url"
+    done < <(installed-list)
+
+    return 0
+}
+
+
+function dpm-sourceme() {
+    local pkgname
+    local path=0
+    local tclpath=0
+    local pythonpath=0
+
+    while IFS= read -r pkgname; do
+        local pkgpath="${PKGDIR}/${pkgname}"
+
+        [[ -d "${pkgpath}/bin"                   ]] && printf "%s\n" "PATH+=:${pkgpath}/bin" && path=1
+        [[ -e "${pkgpath}/lib/pkgIndex.tcl"      ]] && printf "%s\n" "TCLLIBPATH+=:${pkgpath}/lib" && tclpath=1
+        compgen -G "${pkgpath}/lib/*.py" >/dev/null && printf "%s\n" "PYTHONPATH+=:${pkgpath}/lib" && pythonpath=1
+    done < <(installed-list)
+
+    printf 'export DPM=%q\n' "${PKGDIR}"
+    (( path )) && printf "%s\n" "export PATH"
+    (( tclpath )) && printf "%s\n" "export TCLLIBPATH"
+    (( pythonpath )) && printf "%s\n" "export PYTHONPATH"
+
+    return 0
+}
+
+
+##############################################################################
+# HELPER FUNCTIONS
+
+function installed-list() {
+    local pkgpath
+
+    #
+    # Any directory in $PKGDIR is assumed to be a package.  Return their names.
+    #
+
+    for pkgpath in "${PKGDIR}"/*; do
+        if [[ -d "$pkgpath" ]]; then
+            local pkgname=$(basename "$pkgpath")
+
+            printf "%s\n" "$pkgname"
+        fi
+    done
+}
+
+
+function depfile-incr() {
+    local depfile="${PKGDIR}/.dependency"
+    local tmpfile="${depfile}.tmp"
+    local pkgname depcount flags
+    local setflags=""
+    local updated=()
+    local optstring
+    local isok=1
+
+    # Clear the memoized data
+    DEPDATA=
+
+    # Parse arguments
+    optstring=$(egetopt "f:" "flags:" "$@") || return 1
+    eval set -- "$optstring"
+
+    while (( $# )); do
+        [[ "$1" == "--" ]] && shift && break
+
+        case "$1" in
+            -f|--flags) setflags=$2 && shift ;;
+        esac
+
+        shift
+    done
+
+    # Delete tmpfile in case noclobber is set
+    rm -f "$tmpfile"
+
+    # Update existing records
+    while IFS=\| read -r pkgname depcount flags; do
+        if [[ " $* " == *" $pkgname "* ]]; then
+            depcount=$(( depcount + 1 ))
+            [[ "$flags" != *"$setflags"* ]] && flags+=$setflags
+
+            updated+=( "$pkgname" )
+        fi
+
+        printf "%s|%s|%s\n" "$pkgname" "$depcount" "$flags"
+    done < "$depfile" >> "$tmpfile" || isok=0
+
+    # Add new records
+    for pkgname in "$@"; do
+        if [[ " ${updated[*]} " != *" $pkgname "* ]]; then
+            printf "%s|%s|%s\n" "$pkgname" "1" "$setflags"
+        fi
+    done >> "$tmpfile" || isok=0
+
+    (( isok )) && mv -f "$tmpfile" "$depfile"
+}
+
+
+function depfile-decr() {
+    local depfile="${PKGDIR}/.dependency"
+    local tmpfile="${depfile}.tmp"
+    local pkgname depcount flags
+    local clearflags=""
+    local optstring
+    local isok=1
+
+    # Clear the memoized data
+    DEPDATA=
+
+    # Parse arguments
+    optstring=$(egetopt "f:" "flags:" "$@") || return 1
+    eval set -- "$optstring"
+
+    while (( $# )); do
+        [[ "$1" == "--" ]] && shift && break
+
+        case "$1" in
+            -f|--flags) clearflags=$2 && shift ;;
+        esac
+
+        shift
+    done
+
+    # Update the dependency file
+    while IFS=\| read -r pkgname depcount flags; do
+        if [[ " $* " == *" $pkgname "* ]]; then
+            depcount=$(( depcount - 1 ))
+            flags=${flags//$clearflags/}
+        fi
+
+        if (( depcount > 0 )); then
+            printf "%s|%s|%s\n" "$pkgname" "$depcount" "$flags"
+        fi
+    done < "$depfile" > "$tmpfile" || isok=0
+
+    (( isok )) && mv -f "$tmpfile" "$depfile"
+}
+
+
+function depfile-getinfo() {
+    local pkgname=$1
+    local depfile="${PKGDIR}/.dependency"
+    local line
+
+    # Memoize the data
+    if [[ -z "$DEPDATA" ]]; then
+        DEPDATA=$(cat "$depfile")
+    fi
+
+    while IFS= read -r line; do
+        if [[ "$line" == "${pkgname}|"* ]]; then
+            printf "%s\n" "$line"
+            break
+        fi
+
+        false
+    done <<< "$DEPDATA"
+}
+
+
+function depfile-getcount() {
+    local pkgname=$1
+    local record=$(depfile-getinfo "$pkgname")
+    local depcount flags
+
+    IFS=\| read -r pkgname depcount flags <<< "$record"
+
+    # Return zero by default
+    if [[ -z "$depcount" ]]; then
+        depcount=0
+    fi
+
+    printf "%s\n" "$depcount"
+}
+
+
+function depfile-getflags() {
+    local pkgname=$1
+    local record=$(depfile-getinfo "$pkgname")
+
+    IFS=\| read -r pkgname depcount flags <<< "$record"
+
+    printf "%s\n" "$flags"
+}
+
+
+function url-gethandler() {
+    local url=$1
+    local handler
+
+    for handler in "${HANDLERS[@]}"; do
+        if "${handler}-testurl" "$url"; then
+            printf "%s\n" "$handler"
+            break
+        fi
+
+        handler=""
+    done
+
+    [[ -n "$handler" ]]
+}
+
+
+function pkg-gethandler() {
+    local pkgname=$1
+    local handler
+
+    for handler in "${HANDLERS[@]}"; do
+        if "${handler}-testpkg" "$pkgname"; then
+            printf "%s\n" "$handler"
+            break
+        fi
+
+        handler=""
+    done
+
+    [[ -n "$handler" ]]
+}
+
+
+function pkg-isinstalled() {
+    local pkgname=$1
+
+    [[ -n "$pkgname" ]] && [[ -d "${PKGDIR}/${pkgname}" ]]
+}
+
+
+function pkg-geturl() {
+    local pkgname=$1
+    local handler=$(pkg-gethandler "$pkgname")
+
+    [[ -n "$handler" ]] && "${handler}-geturl" "$pkgname"
+}
+
+
+function pkg-getbranch() {
+    local pkgname=$1
+    local handler=$(pkg-gethandler "$pkgname")
+
+    [[ -n "$handler" ]] && "${handler}-getbranch" "$pkgname"
+}
+
+
+function pkg-getdeps() {
+    local pkgname=$1
+    local depfile="${PKGDIR}/${pkgname}/etc/dpm-deps"
+
+    if [[ -r "$depfile" ]]; then
+        cat "$depfile"
+    fi
+}
+
+
+##############################################################################
+# GIT HANDLERS
+
+function git-testdeps() {
+    local isok=1
+
+    # Check for git
+    if ! command -v git >/dev/null; then
+        logger FAIL "Please install 'git'"
+        isok=0
+    fi
+
+    (( isok ))
+}
+
+
+function git-testurl() {
+    local url=$1
+
+    [[ "$url" == *.git ]]
+}
+
+
+function git-testpkg() {
+    local pkgname=$1
+    local pkgpath="${PKGDIR}/${pkgname}"
+
+    [[ -d "${pkgpath}/.git" ]]
+}
+
+
+function git-urlpkg() {
+    local url=$1
+
+    # URLs that don't support <project>.git format can be cloned as <project>/.git
+    if [[ "$url" == */.git ]]; then
+        url=$(dirname "$url")
+    fi
+
+    basename "$url" .git
+}
+
+
+function git-install() {
+    local url=$1 pkgname=$2 branch=${3-}
+    local args=()
+
+    # Extra arguments to git
+    [[ -n "$branch" ]] && args+=( --branch "$branch" )
+
+    # Clone
+    git -C "$PKGDIR" clone "${args[@]}" "$url" "$pkgname"
+}
+
+
+function git-update() {
+    local pkgname=$1
+
+    # Clone
+    git -C "${PKGDIR}/${pkgname}" pull
+}
+
+
+function git-geturl() {
+    local pkgname=$1
+    local pkgpath="${PKGDIR}/${pkgname}"
+
+    git -C "$pkgpath" remote -v | awk '/\(fetch\)$/ { print $2 }'
+}
+
+
+function git-getbranch() {
+    local pkgname=$1
+    local pkgpath="${PKGDIR}/${pkgname}"
+
+    git -C "$pkgpath" branch 2>/dev/null | awk '/^[*]/ { print $2 }'
+}
+
+
+##############################################################################
+# GENERIC UTILITIES
+
+function logger() {
+    local level=$1 && shift
+    local cbegin="" cend=""
+    local line
+
+    # Colorize
+    case "$level" in
+        GOOD)   [[ -t 1 ]] && cbegin="\033[1;32m" && cend="\033[0m" ;;
+        WARN)   [[ -t 2 ]] && cbegin="\033[1;33m" && cend="\033[0m" ;;
+        FAIL)   [[ -t 2 ]] && cbegin="\033[1;31m" && cend="\033[0m" ;;
+    esac
+
+    #
+    # Print arguments or stdin.
+    #
+    while IFS= read -r line; do
+        case "$level" in
+            WARN|FAIL)  printf "${cbegin}%*s[%-4s] %s${cend}\n" "$LOGGER_INDENT" "" "${level::4}" "$line" 1>&2 ;;
+            *)          printf "${cbegin}%*s[%-4s] %s${cend}\n" "$LOGGER_INDENT" "" "${level::4}" "$line"      ;;
+        esac
+    done < <( (( $# )) && printf "%s\n" "$@" || cat )
+}
+
+
+function logger-push() {
+    local count=${1-1}
+
+    (( LOGGER_INDENT += 2 * count )) || :
+}
+
+
+function logger-pop() {
+    local count=${1-1}
+
+    (( LOGGER_INDENT -= 2 * count )) || :
+}
+
+
+function egetopt() {
+    local shortopts=$1 && shift
+    local longopts=$1 && shift
+
+    #
+    # Use GNU "getopt" if available, otherwise fall back to "getopts" built-in.
+    # GNU gives us long options but it's not always available.
+    #
+
+    if command -v getopt >/dev/null && getopt -T >/dev/null; (( $? == 4 )); then
+        getopt -o "$shortopts" --long "$longopts" -- "$@"
+    else
+        local OPTOPT OPTARG OPTIND opt
+        local output=()
+        local isok=1
+
+        while getopts "$shortopts" opt; do
+            output+=( "-${opt}" )
+            [[ "$shortopts" == *"${opt}:"* ]] && output+=( "$OPTARG" )
+            [[ "$shortopts" != *"${opt}"* ]] && isok=0
+        done
+        shift $(( OPTIND - 1 ))
+
+        printf " %q" "${output[@]}" -- "$@"
+        printf "\n"
+
+        (( isok ))
+    fi
+}
+
+
+##############################################################################
+# ENTRY POINT
+
+main "$@"
