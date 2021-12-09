@@ -24,6 +24,9 @@ COMMAND:
   update [PKGNAME]      Update PKGNAME.  If PKGNAME is omitted, all packages
                         are updated.
 
+  refresh               Rebuild the installation records, install any new
+                        dependencies, and remove any stale dependencies.
+
   list                  List installed packages.
 
   sourceme              Source this output to setup BASH.
@@ -71,6 +74,7 @@ function main() {
         install)      shift && action=( dpm-install --recursive --direct ) && lock=1 ;;
         remove)       shift && action=( dpm-remove --recursive --direct  ) && lock=1 ;;
         update)       shift && action=( dpm-update                       ) && lock=1 ;;
+        refresh)      shift && action=( dpm-refresh                      ) && lock=1 ;;
         list)         shift && action=( dpm-list                         ) && lock=1 ;;
         sourceme)     shift && action=( dpm-sourceme                     ) ;;
         help)         shift && action=( usage                            ) ;;
@@ -604,6 +608,63 @@ function dpm-update() {
     done
 
     (( isok ))
+}
+
+
+function dpm-refresh() {
+    local instfile="${PKGDIR}/.installed"
+    local bkupfile="${instfile}.bkup"
+    local dinstall=()
+    local pkgname
+    local isok=1
+
+    # Notification
+    logger INFO "REFRESH all packages..."
+
+    # Get the list of direct-installed packages
+    while IFS= read -r pkgname; do
+        if [[ "$(instfile-getflags "$pkgname")" == *D* ]]; then
+            dinstall+=( "$pkgname" )
+        fi
+    done < <(installed-list) || isok=0
+
+    # Backup the installation file
+    if (( isok )); then
+        # Notification
+        logger INFO "Backup the installation record..."
+
+        rm -f "$bkupfile" \
+        && mv "$instfile" "$bkupfile" \
+        && touch "$instfile" \
+        || isok=0
+    fi
+
+    # Re-install the direct-installed packages
+    if (( isok )); then
+        # Notification
+        logger INFO "Reinstall direct-installed packages..."
+        logger-push
+
+        for pkgname in "${dinstall[@]}"; do
+            dpm-install --direct --recursive "$pkgname" || isok=0
+        done
+
+        logger-pop
+    fi
+
+    # Remove the backup installation file
+    if (( isok )); then
+        logger INFO "Remove the backup installation record..."
+        rm -f "$bkupfile"
+
+        logger GOOD "REFRESH SUCCESS!"
+        return 0
+    fi
+
+    # Notification
+    logger FAIL "${pkgname}: FAILED to refresh, backup installation record at '${bkupfile}'"
+
+    return 1
 }
 
 
