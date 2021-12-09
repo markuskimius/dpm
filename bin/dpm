@@ -282,7 +282,7 @@ function dpm-install() {
             false
         fi
     else
-        "${handler}-install" "$url" "$pkgname" "${branch-}" 2>&1 | logger "${handler^^}"
+        "${handler}-install" "$url" "$pkgname" "${branch-}" 2>&1 | logger "${handler}"
     fi || unwind=10
 
     # Add the installation record
@@ -331,7 +331,7 @@ function dpm-install() {
         # function that does not fully cleans up after itself.
         #
         logger INFO "${pkgname}: Rollback installed files..."
-        [[ -n "$PKGDIR" && -n "$pkgname" ]] && "${handler}-remove" "$pkgname" 2>&1 | logger "${handler^^}"
+        [[ -n "$PKGDIR" && -n "$pkgname" ]] && "${handler}-remove" "$pkgname" 2>&1 | logger "${handler}"
     fi
 
     return 1
@@ -472,7 +472,7 @@ function dpm-remove() {
             logger INFO "${pkgname}: Remove files installed from ${url} branch ${branch} ..."
 
             if [[ -n "$handler" ]]; then
-                [[ -n "$PKGDIR" && -n "$pkgname" ]] && "${handler}-remove" "$pkgname" 2>&1 | logger "${handler^^}"
+                [[ -n "$PKGDIR" && -n "$pkgname" ]] && "${handler}-remove" "$pkgname" 2>&1 | logger "${handler}"
             else
                 logger FAIL "${pkgname}: Cannot identify handler."
                 false
@@ -566,7 +566,7 @@ function dpm-update() {
         done < <(pkg-getdeps "$pkgname")
 
         # Update the package
-        "${handler}-update" "$pkgname" 2>&1 | logger "${handler^^}" \
+        "${handler}-update" "$pkgname" 2>&1 | logger "${handler}" \
         || updateok=0
 
         # Get the list of dependencies after update
@@ -1152,8 +1152,8 @@ function logger() {
     #
     while IFS= read -r line; do
         case "$level" in
-            WARN|FAIL)  printf "${cbegin}%*s[%-4s] %s${cend}\n" "$LOGGER_INDENT" "" "${level::4}" "$line" 1>&2 ;;
-            *)          printf "${cbegin}%*s[%-4s] %s${cend}\n" "$LOGGER_INDENT" "" "${level::4}" "$line"      ;;
+            WARN|FAIL)  printf "${cbegin}%*s[%4s] %s${cend}\n" "$LOGGER_INDENT" "" "${level::4}" "$line" 1>&2 ;;
+            *)          printf "${cbegin}%*s[%4s] %s${cend}\n" "$LOGGER_INDENT" "" "${level::4}" "$line"      ;;
         esac
     done < <( (( $# )) && printf "%s\n" "$@" || cat )
 }
