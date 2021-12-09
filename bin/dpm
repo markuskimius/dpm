@@ -151,9 +151,9 @@ function ensure-deps() {
         isok=0
     fi
 
-    # Ensure the dependency file exists
-    if [[ ! -w "${PKGDIR}/.dependency" ]] && ! touch "${PKGDIR}/.dependency" 2>/dev/null; then
-        logger FAIL "Unable to create ${PKGDIR}/.dependency"
+    # Ensure the installed file exists
+    if [[ ! -w "${PKGDIR}/.installed" ]] && ! touch "${PKGDIR}/.installed" 2>/dev/null; then
+        logger FAIL "Unable to create ${PKGDIR}/.installed"
         isok=0
     fi
 
@@ -251,7 +251,7 @@ function dpm-install() {
     logger INFO "INSTALL '${pkgname}' from ${url}${branch+ branch }${branch-} to ${PKGDIR}/${pkgname} ..."
 
     # Don't allow a package to be direct-installed more than once
-    if pkg-isinstalled "$pkgname" && (( direct )) && [[ "$(depfile-getflags "$pkgname")" == *D* ]]; then
+    if pkg-isinstalled "$pkgname" && (( direct )) && [[ "$(instfile-getflags "$pkgname")" == *D* ]]; then
         logger INFO "${pkgname}: Already direct-installed."
         return 0
     fi
@@ -286,7 +286,7 @@ function dpm-install() {
         fi
 
         logger INFO "${pkgname}: Update installation record..."
-        depfile-incr "${flags[@]}" "$pkgname"
+        instfile-incr "${flags[@]}" "$pkgname"
     fi || unwind=20
 
     # Install the dependencies
@@ -311,12 +311,12 @@ function dpm-install() {
             flags=( --flags=D )
         fi
 
-        logger INFO "${pkgname}: Rollback dependency record..."
-        depfile-decr "${flags[@]}" "$pkgname"
+        logger INFO "${pkgname}: Rollback installation record..."
+        instfile-decr "${flags[@]}" "$pkgname"
     fi
 
     # Unwind the installation
-    if (( unwind >= 10 )) && (( $(depfile-getcount "$pkgname") <= 0 )); then
+    if (( unwind >= 10 )) && (( $(instfile-getcount "$pkgname") <= 0 )); then
         #
         # Unlike above unwinding routines, this code is executed even if the
         # handler-install fails because handler-install may be a user-supplied
@@ -412,7 +412,7 @@ function dpm-remove() {
         fi
 
         # Don't allow a package to be direct-removed if it wasn't direct-installed
-        if (( direct )) && [[ "$(depfile-getflags "$pkgname")" != *D* ]]; then
+        if (( direct )) && [[ "$(instfile-getflags "$pkgname")" != *D* ]]; then
             logger FAIL "${pkgname}: Not direct-installed, cannot be direct-removed."
             isok=0
             continue
@@ -442,14 +442,14 @@ function dpm-remove() {
             fi
 
             logger INFO "${pkgname}: Remove installation record..."
-            depfile-decr "${flags[@]}" "$pkgname" \
+            instfile-decr "${flags[@]}" "$pkgname" \
             || removeok=0
 
             (( ! removeok )) && isok=0 && continue
         fi
 
         # Uninstall the package if needed
-        if (( $(depfile-getcount "$pkgname") <= 0 )); then
+        if (( $(instfile-getcount "$pkgname") <= 0 )); then
             local url=$(pkg-geturl "$pkgname")
             local branch=$(pkg-getbranch "$pkgname")
 
@@ -611,8 +611,8 @@ function dpm-list() {
 
     # Package list
     while IFS= read -r pkgname; do
-        local depcount=$(depfile-getcount "$pkgname")
-        local flags=$(depfile-getflags "$pkgname")
+        local depcount=$(instfile-getcount "$pkgname")
+        local flags=$(instfile-getflags "$pkgname")
         local url=$(pkg-geturl "$pkgname")
         local branch=$(pkg-getbranch "$pkgname")
 
@@ -666,9 +666,9 @@ function installed-list() {
 }
 
 
-function depfile-incr() {
-    local depfile="${PKGDIR}/.dependency"
-    local tmpfile="${depfile}.tmp"
+function instfile-incr() {
+    local instfile="${PKGDIR}/.installed"
+    local tmpfile="${instfile}.tmp"
     local pkgname depcount flags
     local setflags=""
     local updated=()
@@ -705,7 +705,7 @@ function depfile-incr() {
         fi
 
         printf "%s|%s|%s\n" "$pkgname" "$depcount" "$flags"
-    done < "$depfile" >> "$tmpfile" || isok=0
+    done < "$instfile" >> "$tmpfile" || isok=0
 
     # Add new records
     for pkgname in "$@"; do
@@ -714,13 +714,13 @@ function depfile-incr() {
         fi
     done >> "$tmpfile" || isok=0
 
-    (( isok )) && mv -f "$tmpfile" "$depfile"
+    (( isok )) && mv -f "$tmpfile" "$instfile"
 }
 
 
-function depfile-decr() {
-    local depfile="${PKGDIR}/.dependency"
-    local tmpfile="${depfile}.tmp"
+function instfile-decr() {
+    local instfile="${PKGDIR}/.installed"
+    local tmpfile="${instfile}.tmp"
     local pkgname depcount flags
     local clearflags=""
     local optstring
@@ -743,7 +743,7 @@ function depfile-decr() {
         shift
     done
 
-    # Update the dependency file
+    # Update the installation file
     while IFS=\| read -r pkgname depcount flags; do
         if [[ " $* " == *" $pkgname "* ]]; then
             depcount=$(( depcount - 1 ))
@@ -753,20 +753,20 @@ function depfile-decr() {
         if (( depcount > 0 )); then
             printf "%s|%s|%s\n" "$pkgname" "$depcount" "$flags"
         fi
-    done < "$depfile" > "$tmpfile" || isok=0
+    done < "$instfile" > "$tmpfile" || isok=0
 
-    (( isok )) && mv -f "$tmpfile" "$depfile"
+    (( isok )) && mv -f "$tmpfile" "$instfile"
 }
 
 
-function depfile-getinfo() {
+function instfile-getinfo() {
     local pkgname=$1
-    local depfile="${PKGDIR}/.dependency"
+    local instfile="${PKGDIR}/.installed"
     local line
 
     # Memoize the data
     if [[ -z "$DEPDATA" ]]; then
-        DEPDATA=$(cat "$depfile")
+        DEPDATA=$(cat "$instfile")
     fi
 
     while IFS= read -r line; do
@@ -780,9 +780,9 @@ function depfile-getinfo() {
 }
 
 
-function depfile-getcount() {
+function instfile-getcount() {
     local pkgname=$1
-    local record=$(depfile-getinfo "$pkgname")
+    local record=$(instfile-getinfo "$pkgname")
     local depcount flags
 
     IFS=\| read -r pkgname depcount flags <<< "$record"
@@ -796,9 +796,9 @@ function depfile-getcount() {
 }
 
 
-function depfile-getflags() {
+function instfile-getflags() {
     local pkgname=$1
-    local record=$(depfile-getinfo "$pkgname")
+    local record=$(instfile-getinfo "$pkgname")
 
     IFS=\| read -r pkgname depcount flags <<< "$record"
 
