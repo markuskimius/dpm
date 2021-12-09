@@ -27,6 +27,9 @@ COMMAND:
   recover               Rebuild the installation records and install missing
                         dependencies.
 
+  cleanup               Delete any package installed as a dependency but is no
+                        longer required.
+
   list                  List installed packages.
 
   sourceme              Source this output to setup BASH.
@@ -75,6 +78,7 @@ function main() {
         remove)       shift && action=( dpm-remove --recursive --direct  ) && lock=1 ;;
         update)       shift && action=( dpm-update                       ) && lock=1 ;;
         recover)      shift && action=( dpm-recover                      ) && lock=1 ;;
+        cleanup)      shift && action=( dpm-cleanup                      ) && lock=1 ;;
         list)         shift && action=( dpm-list                         ) && lock=1 ;;
         sourceme)     shift && action=( dpm-sourceme                     ) ;;
         help)         shift && action=( usage                            ) ;;
@@ -422,6 +426,13 @@ function dpm-remove() {
             continue
         fi
 
+        # Don't allow a direct-installed package to be removed by a dependency-removal
+        if (( ! direct )) && (( $(instfile-getcount "$pkgname") == 1 )) && [[ "$(instfile-getflags "$pkgname")" == *D* ]]; then
+            logger FAIL "${pkgname}: Not installed as a dependency, cannot be direct-removed."
+            isok=0
+            continue
+        fi
+
         # Don't allow circular dependency
         if [[ "|${trackback}|" == *"|${pkgname}|"* ]]; then
             logger FAIL "${pkgname}: FAILED to remove, circular dependency."
@@ -663,6 +674,44 @@ function dpm-recover() {
 
     # Notification
     logger FAIL "${pkgname}: FAILED to recover, backup installation record at '${bkupfile}'"
+
+    return 1
+}
+
+
+function dpm-cleanup() {
+    local pkgname
+    local isok=1
+
+    # Notification
+    logger INFO "CLEANUP..."
+
+    # Get the list of packages to remove
+    while IFS= read -r pkgname; do
+        if (( $(instfile-getcount "$pkgname") == 0 )); then
+            local instflags=$(instfile-getflags "$pkgname")
+            local flags=()
+
+            logger INFO "${pkgname}: No longer used:"
+
+            if [[ "$instflags" == *D* ]]; then
+                flags+=( --direct )
+            fi
+
+            logger-push
+            dpm-remove "${flags[@]}" "$pkgname" || isok=0
+            logger-pop
+        fi
+    done < <(installed-list)
+
+    # Success!
+    if (( isok )); then
+        logger GOOD "CLEANUP SUCCESS!"
+        return 0
+    fi
+
+    # Notification
+    logger FAIL "${pkgname}: FAILED to cleanup, see above for errors."
 
     return 1
 }
