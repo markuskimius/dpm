@@ -111,7 +111,7 @@ function load-config() {
 
     # Clear globals
     LOGGER_INDENT=0
-    DEPDATA=
+    INSTALLED=
 
     # Source the first file found in CONFIG[], if any
     for file in "${CONFIGS[@]}"; do
@@ -469,7 +469,7 @@ function dpm-remove() {
             local branch=$(pkg-getbranch "$pkgname")
             local handler=$(pkg-gethandler "$pkgname")
 
-            logger INFO "${pkgname}: Remove installed files from ${url} branch ${branch} ..."
+            logger INFO "${pkgname}: Remove files installed from ${url} branch ${branch} ..."
 
             if [[ -n "$handler" ]]; then
                 [[ -n "$PKGDIR" && -n "$pkgname" ]] && "${handler}-remove" "$pkgname" 2>&1 | logger "${handler^^}"
@@ -647,6 +647,7 @@ function dpm-recover() {
         rm -f "$bkupfile" \
         && mv "$instfile" "$bkupfile" \
         && touch "$instfile" \
+        && INSTALLED="" \
         || isok=0
     fi
 
@@ -798,7 +799,6 @@ function installed-list() {
 
 
 function missing-list() {
-    local instfile="${PKGDIR}/.installed"
     local pkgname depcount flags rest
 
     #
@@ -806,11 +806,15 @@ function missing-list() {
     # installed.
     #
 
-    while IFS=\| read -r pkgname depcount flags rest; do
-        if ! pkg-isinstalled "$pkgname"; then
-            printf "%s\n" "$pkgname"
-        fi
-    done < "$instfile"
+    instfile-memoize
+
+    if [[ -n "$INSTALLED" ]]; then
+        while IFS=\| read -r pkgname depcount flags rest; do
+            if ! pkg-isinstalled "$pkgname"; then
+                printf "%s\n" "$pkgname"
+            fi
+        done <<<"$INSTALLED"
+    fi
 }
 
 
@@ -824,7 +828,7 @@ function instfile-incr() {
     local isok=1
 
     # Clear the memoized data
-    DEPDATA=
+    INSTALLED=
 
     # Parse arguments
     optstring=$(egetopt "f:" "flags:" "$@") || return 1
@@ -875,7 +879,7 @@ function instfile-decr() {
     local isok=1
 
     # Clear the memoized data
-    DEPDATA=
+    INSTALLED=
 
     # Parse arguments
     optstring=$(egetopt "f:" "flags:" "$@") || return 1
@@ -909,13 +913,9 @@ function instfile-decr() {
 
 function instfile-getinfo() {
     local pkgname=$1
-    local instfile="${PKGDIR}/.installed"
     local line
 
-    # Memoize the data
-    if [[ -z "$DEPDATA" ]]; then
-        DEPDATA=$(cat "$instfile")
-    fi
+    instfile-memoize
 
     while IFS= read -r line; do
         if [[ "$line" == "${pkgname}|"* ]]; then
@@ -924,7 +924,7 @@ function instfile-getinfo() {
         fi
 
         false
-    done <<< "$DEPDATA"
+    done <<<"$INSTALLED"
 }
 
 
@@ -952,6 +952,16 @@ function instfile-getflags() {
     IFS=\| read -r pkgname depcount flags <<< "$record"
 
     printf "%s\n" "$flags"
+}
+
+
+function instfile-memoize() {
+    local instfile="${PKGDIR}/.installed"
+
+    # Memoize the data
+    if [[ -z "$INSTALLED" ]]; then
+        INSTALLED=$(cat "$instfile")
+    fi
 }
 
 
