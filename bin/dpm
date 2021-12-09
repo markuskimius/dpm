@@ -248,7 +248,7 @@ function dpm-install() {
 
     # Sanity check
     [[ -z "$url"     ]] && logger FAIL "Must specify URL." && return 1
-    [[ -z "$pkgname" ]] && logger FAIL "Cannot deduce PKGNAME." && return 1
+    [[ -z "$pkgname" ]] && logger FAIL "Cannot deduce PKGNAME from URL '$url'" && return 1
     [[ -z "$handler" ]] && logger FAIL "${url}: Cannot identify handler for URL." && return 1
 
     # Notification
@@ -671,6 +671,7 @@ function dpm-refresh() {
 function dpm-list() {
     local format="%15s  %8s  %-8s  %-8s  %s\n"
     local pkgname
+    local isok=1
 
     # Header
     printf "$format" "PACKAGE" "USAGE" "FLAGS" "BRANCH" "URL"
@@ -683,10 +684,24 @@ function dpm-list() {
         local url=$(pkg-geturl "$pkgname")
         local branch=$(pkg-getbranch "$pkgname")
 
+        # If there are issues
+        [[ -z "$url"     ]] && url="?"    && isok=0
+        [[ -z "$branch"  ]] && branch="?" && isok=0
+        (( depcount <= 0 )) && isok=0
+
         printf "$format" "$pkgname" "$depcount" "$flags" "$branch" "$url"
     done < <(installed-list)
 
-    return 0
+    # Missing packages
+    while IFS= read -r pkgname; do
+        local depcount=$(instfile-getcount "$pkgname")
+        local flags=$(instfile-getflags "$pkgname")
+
+        printf "$format" "$pkgname" "$depcount" "$flags" "-" "-"
+        isok=0
+    done < <(missing-list)
+
+    (( isok ))
 }
 
 
@@ -730,6 +745,23 @@ function installed-list() {
             printf "%s\n" "$pkgname"
         fi
     done
+}
+
+
+function missing-list() {
+    local instfile="${PKGDIR}/.installed"
+    local pkgname depcount flags rest
+
+    #
+    # Return name of any package in the installation record that isn't
+    # installed.
+    #
+
+    while IFS=\| read -r pkgname depcount flags rest; do
+        if ! pkg-isinstalled "$pkgname"; then
+            printf "%s\n" "$pkgname"
+        fi
+    done < "$instfile"
 }
 
 
