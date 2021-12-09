@@ -332,13 +332,13 @@ function dpm-install() {
 
 function dpm-install-deps() {
     local pkgname=$1 trackback=$2
-    local depname depurl depbranch
+    local depname depurl depbranch deprest
     local installed=()
     local unwind=0
     local count=0
 
     # Install the dependencies
-    while IFS=\| read -r depname depurl depbranch; do
+    while IFS=\| read -r depname depurl depbranch deprest; do
         [[ -z "$depbranch" ]] && unset depbranch
         logger INFO "${pkgname}: Requires '${depname}' from ${depurl}${depbranch+ branch }${depbranch-}:"
 
@@ -482,12 +482,12 @@ function dpm-remove() {
 
 function dpm-remove-deps() {
     local pkgname=$1 trackback=$2
-    local depname depurl depbranch
+    local depname depurl depbranch deprest
     local count=0
     local isok=1
 
     # Remove the dependencies
-    while IFS=\| read -r depname depurl depbranch; do
+    while IFS=\| read -r depname depurl depbranch deprest; do
         logger INFO "${pkgname}: Depends on ${depname}:"
 
         logger-push
@@ -563,8 +563,8 @@ function dpm-update() {
         if (( updateok )); then
             for line in "${postdeps[@]}"; do
                 if [[ " ${predeps[@]} " != *" $line "* ]]; then
-                    local depurl depname depbranch
-                    IFS=\| read -r depname depurl depbranch <<<"$line"
+                    local depurl depname depbranch deprest
+                    IFS=\| read -r depname depurl depbranch deprest <<<"$line"
 
                     logger INFO "${pkgname}: Now requires '${depname}' from ${depurl} branch ${depbranch}:"
 
@@ -582,8 +582,8 @@ function dpm-update() {
         if (( updateok )); then
             for line in "${predeps[@]}"; do
                 if [[ " ${postdeps[@]} " != *" $line "* ]]; then
-                    local depurl depname depbranch
-                    IFS=\| read -r depname depurl depbranch <<<"$line"
+                    local depurl depname depbranch deprest
+                    IFS=\| read -r depname depurl depbranch deprest <<<"$line"
 
                     logger INFO "${pkgname}: No longer requires '${depname}':"
 
@@ -675,7 +675,7 @@ function installed-list() {
 function instfile-incr() {
     local instfile="${PKGDIR}/.installed"
     local tmpfile="${instfile}.tmp"
-    local pkgname depcount flags
+    local pkgname depcount flags rest
     local setflags=""
     local updated=()
     local optstring
@@ -702,7 +702,7 @@ function instfile-incr() {
     rm -f "$tmpfile"
 
     # Update existing records
-    while IFS=\| read -r pkgname depcount flags; do
+    while IFS=\| read -r pkgname depcount flags rest; do
         if [[ " $* " == *" $pkgname "* ]]; then
             depcount=$(( depcount + 1 ))
             [[ "$flags" != *"$setflags"* ]] && flags+=$setflags
@@ -710,13 +710,13 @@ function instfile-incr() {
             updated+=( "$pkgname" )
         fi
 
-        printf "%s|%s|%s\n" "$pkgname" "$depcount" "$flags"
+        printf "%s|%s|%s|%s\n" "$pkgname" "$depcount" "$flags" "$rest"
     done < "$instfile" >> "$tmpfile" || isok=0
 
     # Add new records
     for pkgname in "$@"; do
         if [[ " ${updated[*]} " != *" $pkgname "* ]]; then
-            printf "%s|%s|%s\n" "$pkgname" "1" "$setflags"
+            printf "%s|%s|%s|\n" "$pkgname" "1" "$setflags"
         fi
     done >> "$tmpfile" || isok=0
 
@@ -727,7 +727,7 @@ function instfile-incr() {
 function instfile-decr() {
     local instfile="${PKGDIR}/.installed"
     local tmpfile="${instfile}.tmp"
-    local pkgname depcount flags
+    local pkgname depcount flags rest
     local clearflags=""
     local optstring
     local isok=1
@@ -750,14 +750,14 @@ function instfile-decr() {
     done
 
     # Update the installation file
-    while IFS=\| read -r pkgname depcount flags; do
+    while IFS=\| read -r pkgname depcount flags rest; do
         if [[ " $* " == *" $pkgname "* ]]; then
             depcount=$(( depcount - 1 ))
             flags=${flags//$clearflags/}
         fi
 
         if (( depcount > 0 )); then
-            printf "%s|%s|%s\n" "$pkgname" "$depcount" "$flags"
+            printf "%s|%s|%s|%s\n" "$pkgname" "$depcount" "$flags" "$rest"
         fi
     done < "$instfile" > "$tmpfile" || isok=0
 
@@ -789,9 +789,9 @@ function instfile-getinfo() {
 function instfile-getcount() {
     local pkgname=$1
     local record=$(instfile-getinfo "$pkgname")
-    local depcount flags
+    local depcount flags rest
 
-    IFS=\| read -r pkgname depcount flags <<< "$record"
+    IFS=\| read -r pkgname depcount flags rest <<< "$record"
 
     # Return zero by default
     if [[ -z "$depcount" ]]; then
@@ -805,6 +805,7 @@ function instfile-getcount() {
 function instfile-getflags() {
     local pkgname=$1
     local record=$(instfile-getinfo "$pkgname")
+    local depcount flags rest
 
     IFS=\| read -r pkgname depcount flags <<< "$record"
 
