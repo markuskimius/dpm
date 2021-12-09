@@ -323,7 +323,7 @@ function dpm-install() {
         # function that does not fully cleans up after itself.
         #
         logger INFO "${pkgname}: Rollback installed files..."
-        [[ -n "$PKGDIR" && -n "$pkgname" ]] && rm -rf "${PKGDIR}/${pkgname}"
+        [[ -n "$PKGDIR" && -n "$pkgname" ]] && "${handler}-remove" "$pkgname" 2>&1 | logger "${handler^^}"
     fi
 
     return 1
@@ -452,9 +452,16 @@ function dpm-remove() {
         if (( $(instfile-getcount "$pkgname") <= 0 )); then
             local url=$(pkg-geturl "$pkgname")
             local branch=$(pkg-getbranch "$pkgname")
+            local handler=$(pkg-gethandler "$pkgname")
 
             logger INFO "${pkgname}: Remove installed files from ${url} branch ${branch} ..."
-            [[ -n "$PKGDIR" && -n "$pkgname" ]] && rm -rf "${PKGDIR}/${pkgname}" || removeok=0
+
+            if [[ -n "$handler" ]]; then
+                [[ -n "$PKGDIR" && -n "$pkgname" ]] && "${handler}-remove" "$pkgname" 2>&1 | logger "${handler^^}"
+            else
+                logger FAIL "${pkgname}: Cannot identify handler."
+                false
+            fi || removeok=0
 
             (( ! removeok )) && isok=0 && continue
         fi
@@ -544,7 +551,6 @@ function dpm-update() {
         done < <(pkg-getdeps "$pkgname")
 
         # Update the package
-        logger INFO "${pkgname}: Updating..."
         "${handler}-update" "$pkgname" 2>&1 | logger "${handler^^}" \
         || updateok=0
 
@@ -572,7 +578,7 @@ function dpm-update() {
             done
         fi
 
-        # Remove oudated dependencies
+        # Remove stale dependencies
         if (( updateok )); then
             for line in "${predeps[@]}"; do
                 if [[ " ${postdeps[@]} " != *" $line "* ]]; then
@@ -925,6 +931,27 @@ function git-install() {
 
     # Clone
     git -C "$PKGDIR" clone "${args[@]}" "$url" "$pkgname"
+}
+
+
+function git-remove() {
+    local pkgname=$1
+    local pkgpath="${PKGDIR}/${pkgname}"
+    local numchanges
+    local isok=1
+
+    # Test the repository for changes
+    numchanges=$(git -C "$pkgpath" status --porcelain | wc -l) || isok=0
+
+    # Remove the repository
+    if (( isok )) && (( numchanges == 0 )); then
+        rm -rf "$pkgpath" || isok=0
+    elif (( isok )); then
+        printf "%s\n" "${pkgname}: Has uncommitted changes, will not remove." 1>&2
+        isok=0
+    fi
+
+    (( isok ))
 }
 
 
