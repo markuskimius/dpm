@@ -82,15 +82,15 @@ function main() {
 
     # Check arguments
     case "${1-}" in
-        install)      shift && action=( dpm-install --recursive --direct ) && lock=1 ;;
-        mv)           shift && action=( dpm-rename                       ) && lock=1 ;;
-        remove)       shift && action=( dpm-remove --recursive --direct  ) && lock=1 ;;
-        update)       shift && action=( dpm-update                       ) && lock=1 ;;
-        recover)      shift && action=( dpm-recover                      ) && lock=1 ;;
-        cleanup)      shift && action=( dpm-cleanup                      ) && lock=1 ;;
-        list)         shift && action=( dpm-list                         ) && lock=1 ;;
-        sourceme)     shift && action=( dpm-sourceme                     ) ;;
-        help)         shift && action=( usage                            ) ;;
+        install)      shift && action=( dpm-install -dr  ) && lock=1 ;;
+        mv)           shift && action=( dpm-rename       ) && lock=1 ;;
+        remove)       shift && action=( dpm-remove -dr   ) && lock=1 ;;
+        update)       shift && action=( dpm-update       ) && lock=1 ;;
+        recover)      shift && action=( dpm-recover      ) && lock=1 ;;
+        cleanup)      shift && action=( dpm-cleanup      ) && lock=1 ;;
+        list)         shift && action=( dpm-list         ) && lock=1 ;;
+        sourceme)     shift && action=( dpm-sourceme     ) ;;
+        help)         shift && action=( usage            ) ;;
         *)            logger FAIL "${1-(none)}: Invalid COMMAND"
                       isok=0
                       ;;
@@ -300,7 +300,7 @@ function dpm-install() {
         local flags=()
 
         if (( direct )); then
-            flags+=( --flags=D )
+            flags+=( -fD )
         fi
 
         logger INFO "${pkgname}: Update installation record..."
@@ -309,10 +309,10 @@ function dpm-install() {
 
     # Install the dependencies
     if (( ! unwind && recursive )); then
-        local flags=( --trackback="${trackback}|${pkgname}" )
+        local flags=( -t "${trackback}|${pkgname}" )
 
         if (( safemode )); then
-            flags+=( --safemode )
+            flags+=( -s )
         fi
 
         dpm-install-deps "${flags[@]}" "$pkgname"
@@ -332,7 +332,7 @@ function dpm-install() {
         local flags=()
 
         if (( direct )); then
-            flags=( --flags=D )
+            flags=( -fD )
         fi
 
         logger INFO "${pkgname}: Rollback installation record..."
@@ -379,10 +379,10 @@ function dpm-install-deps() {
 
     # Install the dependencies
     for pkgname in "$@"; do
-        local flags=( --recursive --trackback="${trackback}" )
+        local flags=( -rt "${trackback}" )
 
         if (( safemode )); then
-            flags+=( --safemode )
+            flags+=( -s )
         fi
 
         while IFS=\| read -r depname depurl depbranch deprest; do
@@ -390,7 +390,7 @@ function dpm-install-deps() {
             logger INFO "${pkgname}: Requires '${depname}' from ${depurl}${depbranch+ branch }${depbranch-}:"
 
             logger-push
-            dpm-install "${flags[@]}" --branch="${depbranch-}" "$depurl" "$depname" \
+            dpm-install "${flags[@]}" -b "${depbranch-}" "$depurl" "$depname" \
             && installed=( "$depname" ) \
             || unwind=10
             logger-pop
@@ -408,10 +408,10 @@ function dpm-install-deps() {
 
     # Unwind the installed packages
     if (( unwind > 0 && count )); then
-        local flags=( --recursive )
+        local flags=( -r )
 
         if (( safemode )); then
-            flags+=( --safemode )
+            flags+=( -s )
         fi
 
         # Notification
@@ -471,13 +471,13 @@ function dpm-rename() {
     if (( ! unwind )); then
         logger INFO "${pkgname2}: Increment installation record..."
 
-        instfile-incr --flags="$flags" "$pkgname2"
+        instfile-incr -f "$flags" "$pkgname2"
     fi || unwind=20
 
     if (( ! unwind )); then
         logger INFO "${pkgname1}: Decrement installation record..."
 
-        instfile-decr --flags="$flags" "$pkgname1"
+        instfile-decr -f "$flags" "$pkgname1"
     fi || unwind=30
 
     # Success!
@@ -492,7 +492,7 @@ function dpm-rename() {
     # Unwind the incrementing of the installation record
     if (( unwind > 20 )); then
         logger INFO "${pkgname2}: Rollback installation record..."
-        instfile-decr --flags="$flags" "$pkgname2"
+        instfile-decr -f "$flags" "$pkgname2"
     fi
 
     # Unwind the renaming of the directory
@@ -566,10 +566,10 @@ function dpm-remove() {
 
         # Remove the dependencies
         if (( recursive )); then
-            local flags=( --trackback="${trackback}|${pkgname}" )
+            local flags=( -t "${trackback}|${pkgname}" )
 
             if (( safemode )); then
-                flags+=( --safemode )
+                flags+=( -s )
             fi
 
             dpm-remove-deps "${flags[@]}" "$pkgname" \
@@ -583,7 +583,7 @@ function dpm-remove() {
             local flags=()
 
             if (( direct )); then
-                flags+=( --flags=D )
+                flags+=( -fD )
             fi
 
             logger INFO "${pkgname}: Remove installation record..."
@@ -649,10 +649,10 @@ function dpm-remove-deps() {
 
     # Remove the dependencies
     for pkgname in "$@"; do
-        local flags=( --recursive --trackback="${trackback}" )
+        local flags=( -rt "${trackback}" )
 
         if (( safemode )); then
-            flags+=( --safemode )
+            flags+=( -s )
         fi
 
         while IFS=\| read -r depname depurl depbranch deprest; do
@@ -738,7 +738,7 @@ function dpm-update() {
                     logger INFO "${pkgname}: Now requires '${depname}' from ${depurl} branch ${depbranch}:"
 
                     logger-push
-                    dpm-install --recursive --trackback="$pkgname" --branch="$depbranch" "$depurl" "$depname" \
+                    dpm-install -rt "$pkgname" -b "$depbranch" "$depurl" "$depname" \
                     || updateok=0
                     logger-pop
                 fi
@@ -757,7 +757,7 @@ function dpm-update() {
                     logger INFO "${pkgname}: No longer requires '${depname}':"
 
                     logger-push
-                    dpm-remove --safemode --recursive --trackback="$pkgname" "$depname" \
+                    dpm-remove -srt "$pkgname" "$depname" \
                     || updateok=0
                     logger-pop
                 fi
@@ -812,7 +812,7 @@ function dpm-recover() {
         logger-push
 
         for pkgname in "${dinstall[@]}"; do
-            dpm-install --direct --safemode --recursive "$pkgname" || isok=0
+            dpm-install -dsr "$pkgname" || isok=0
         done
 
         logger-pop
@@ -850,7 +850,7 @@ function dpm-cleanup() {
             logger INFO "${pkgname}: No longer used:"
 
             if [[ "$instflags" == *D* ]]; then
-                flags+=( --direct )
+                flags+=( -d )
             fi
 
             logger-push
@@ -1353,7 +1353,7 @@ function git-install() {
     local args=()
 
     # Extra arguments to git
-    [[ -n "$branch" ]] && args+=( --branch "$branch" )
+    [[ -n "$branch" ]] && args+=( -b "$branch" )
 
     # Clone
     git -C "$PKGDIR" clone "${args[@]}" "$url" "$pkgname"
