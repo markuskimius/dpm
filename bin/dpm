@@ -42,6 +42,8 @@ COMMAND:
 
   sourceme              Source this output to setup BASH.
 
+  sourceit PKGNAME      Source this output to setup BASH for PKGNAME.
+
 FILES:
   Config files:$(printf "\n    %s" "${CONFIGS[@]}")
 
@@ -90,6 +92,7 @@ function main() {
         cleanup)      shift && action=( dpm-cleanup      ) && lock=1 ;;
         list)         shift && action=( dpm-list         ) && lock=1 ;;
         sourceme)     shift && action=( dpm-sourceme     ) ;;
+        sourceit)     shift && action=( dpm-sourceit     ) && lock=1 ;;
         help)         shift && action=( usage            ) ;;
         *)            logger FAIL "${1-(none)}: Invalid COMMAND"
                       isok=0
@@ -1048,6 +1051,27 @@ function dpm-sourceme() {
     (( pythonpath )) && printf "%s\n" "export PYTHONPATH"
 
     return 0
+}
+
+
+function dpm-sourceit() {
+    local pkgname
+    local isok=1
+
+    for pkgname in "$@"; do
+        local pkgpath="${PKGDIR}/${pkgname}"
+        local bashrc="${pkgpath}/etc/bashrc"
+
+        if ! pkg-isinstalled "$pkgname"; then
+            logger FAIL "${pkgname}: Not installed, cannot source."
+            isok=0
+            continue
+        fi
+
+        [[ -r "$bashrc" ]] && cat "$bashrc" || isok=0
+    done
+
+    (( isok ))
 }
 
 
