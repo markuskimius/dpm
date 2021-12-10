@@ -808,7 +808,7 @@ function dpm-list() {
     local header=( "PACKAGE" "USAGE" "FLAGS" )
     local hline=( "-------" "-----" "-----" )
     local widths=( 15 5 5 )
-    local delim=$'\001'
+    local delim=$'\x02'
     local rows=()
     local isok=1
 
