@@ -36,7 +36,7 @@ COMMAND:
   cleanup               Delete any package installed as a dependency but is no
                         longer required.
 
-  list                  List installed packages.
+  list [-l,--long]      List installed packages.
 
   sourceme              Source this output to setup BASH.
 
@@ -803,54 +803,108 @@ function dpm-cleanup() {
 
 
 function dpm-list() {
-    local format="  %*s  %*s  %-*s  %-*s  %-*s\n"
-    local header=( "PACKAGE" "USAGE" "FLAGS" "BRANCH" "URL" )
-    local widths=( ${#header[0]} ${#header[1]} ${#header[2]} ${#header[3]} ${#header[4]} )
-    local rows=()
+    local optstring long=0
+    local format="  %*s  %*s  %-*s"
+    local header=( "PACKAGE" "USAGE" "FLAGS" )
+    local hline=( "-------" "-----" "-----" )
+    local widths=( 15 5 5 )
     local delim=$'\001'
-    local pkgname i
+    local rows=()
     local isok=1
 
+    # Parse arguments
+    optstring=$(egetopt "l" "long" "$@") || return 1
+    eval set -- "$optstring"
+
+    while (( $# )); do
+        [[ "$1" == "--" ]] && shift && break
+
+        case "$1" in
+            -l|--long)  long=1  ;;
+        esac
+
+        shift
+    done
+
+    # Long option initialization
+    if (( long )); then
+        local i
+
+        format+="  %-*s  %-*s"
+        header+=( "BRANCH" "URL" )
+        widths=()
+
+        for (( i=0; i < ${#header[@]}; i++ )); do
+            widths+=( ${#header[i]} )
+        done
+    fi
+
     #
-    # Build the list of packages first so we can calculate the maximum display
-    # width for each column before printing them.
+    # In long option mode, we build the list of packages first so we can
+    # calculate the maximum display width for each column before printing them.
+    # Otherwise we print them outright for speed.
     #
+
+    # Header in short option
+    if (( ! long )); then
+        iprintf "$format\n" "${widths[@]}" "${header[@]}"
+        iprintf "$format\n" "${widths[@]}" "${hline[@]}"
+    fi
 
     # Build installed package list
-    while IFS= read -r pkgname; do
-        local depcount=$(instfile-getcount "$pkgname")
-        local flags=$(instfile-getflags "$pkgname")
-        local url=$(pkg-geturl "$pkgname")
-        local branch=$(pkg-getbranch "$pkgname")
+    if true; then
+        local pkgname
 
-        # If there are issues
-        [[ -z "$url"     ]] && url="?"    && isok=0
-        [[ -z "$branch"  ]] && branch="?" && isok=0
-        (( depcount <= 0 )) && isok=0
+        while IFS= read -r pkgname; do
+            local depcount=$(instfile-getcount "$pkgname")
+            local flags=$(instfile-getflags "$pkgname")
 
-        rows+=( "${pkgname}${delim}${depcount}${delim}${flags}${delim}${branch}${delim}${url}" )
-        (( ${widths[0]} < ${#pkgname}  )) && widths[0]=${#pkgname}
-        (( ${widths[1]} < ${#depcount} )) && widths[1]=${#depcount}
-        (( ${widths[2]} < ${#flags}    )) && widths[2]=${#flags}
-        (( ${widths[3]} < ${#branch}   )) && widths[3]=${#branch}
-        (( ${widths[4]} < ${#url}      )) && widths[4]=${#url}
-    done < <(installed-list)
+            # If there are issues
+            (( depcount <= 0 )) && isok=0
+
+            if (( long )); then
+                local url=$(pkg-geturl "$pkgname")
+                local branch=$(pkg-getbranch "$pkgname")
+
+                # If there are issues
+                [[ -z "$url"     ]] && url="?"    && isok=0
+                [[ -z "$branch"  ]] && branch="?" && isok=0
+
+                rows+=( "${pkgname}${delim}${depcount}${delim}${flags}${delim}${branch}${delim}${url}" )
+                (( ${widths[0]} < ${#pkgname}  )) && widths[0]=${#pkgname}
+                (( ${widths[1]} < ${#depcount} )) && widths[1]=${#depcount}
+                (( ${widths[2]} < ${#flags}    )) && widths[2]=${#flags}
+                (( ${widths[3]} < ${#branch}   )) && widths[3]=${#branch}
+                (( ${widths[4]} < ${#url}      )) && widths[4]=${#url}
+            else
+                iprintf "$format\n" "${widths[@]}" "$pkgname" "$depcount" "$flags"
+            fi
+        done < <(installed-list)
+    fi
 
     # Build missing packages list
-    while IFS= read -r pkgname; do
-        local depcount=$(instfile-getcount "$pkgname")
-        local flags=$(instfile-getflags "$pkgname")
+    if true; then
+        local pkgname
 
-        rows+=( "${pkgname}${delim}${depcount}${delim}${flags}${delim}-${delim}-" )
-        (( ${widths[0]} < ${#pkgname}  )) && widths[0]=${#pkgname}
-        (( ${widths[1]} < ${#depcount} )) && widths[1]=${#depcount}
-        (( ${widths[2]} < ${#flags}    )) && widths[2]=${#flags}
+        while IFS= read -r pkgname; do
+            local depcount=$(instfile-getcount "$pkgname")
+            local flags=$(instfile-getflags "$pkgname")
 
-        isok=0
-    done < <(missing-list)
+            if (( long )); then
+                rows+=( "${pkgname}${delim}${depcount}${delim}${flags}${delim}-${delim}-" )
+                (( ${widths[0]} < ${#pkgname}  )) && widths[0]=${#pkgname}
+                (( ${widths[1]} < ${#depcount} )) && widths[1]=${#depcount}
+                (( ${widths[2]} < ${#flags}    )) && widths[2]=${#flags}
+            else
+                iprintf "$format\n" "${widths[@]}" "$pkgname" "$depcount" "$flags"
+            fi
+
+            isok=0
+        done < <(missing-list)
+    fi
 
     # Print header
-    if true; then
+    if (( long )); then
         local output
         local hval=()
         local hbar=()
@@ -858,31 +912,35 @@ function dpm-list() {
 
         # Interleave with column widths
         for (( i=0; i < ${#widths[@]}; i++ )); do
-            hval+=( "${widths[$i]}" "${header[$i]}" )
-            hbar+=( "${widths[$i]}" "$(printf -- "-%.0s" $(seq 1 ${widths[$i]}) )" )
+            hval+=( "${widths[i]}" "${header[i]}" )
+            hbar+=( "${widths[i]}" "$(repeat - ${widths[i]})" )
         done
 
-        printf "$format" "${hval[@]}"
-        printf "$format" "${hbar[@]}"
+        printf "$format\n" "${hval[@]}"
+        printf "$format\n" "${hbar[@]}"
     fi
 
     # Print packages
-    for (( i=0; i < ${#rows[@]}; i++ )); do
-        local cols=()
-        local args=()
-        local j
+    if (( long )); then
+        local i
 
-        # Get the column values
-        IFS=${delim} read -ra cols <<<"${rows[$i]}"
+        for (( i=0; i < ${#rows[@]}; i++ )); do
+            local cols=()
+            local args=()
+            local j
 
-        # Interleave with column widths
-        for (( j=0; j < ${#widths[@]}; j++ )); do
-            args+=( "${widths[$j]}" "${cols[$j]}" )
+            # Get the column values
+            IFS=${delim} read -ra cols <<<"${rows[i]}"
+
+            # Interleave with column widths
+            for (( j=0; j < ${#widths[@]}; j++ )); do
+                args+=( "${widths[j]}" "${cols[j]}" )
+            done
+
+            # Print
+            printf "$format\n" "${args[@]}"
         done
-
-        # Print
-        printf "$format" "${args[@]}"
-    done
+    fi
 
     (( isok ))
 }
@@ -1334,6 +1392,37 @@ function egetopt() {
 
         (( isok ))
     fi
+}
+
+
+function repeat() {
+    local char=$1
+    local count=$2
+    local output=""
+    local i
+
+    for (( i=0; i < count; i++ )); do
+        output+="$char"
+    done
+
+    printf "%s" "$output"
+}
+
+
+function iprintf() {
+    local format=$1 && shift
+    local count=$(( $# / 2 ))
+    local argv=( "$@" )
+    local args=()
+    local i
+
+    # Call printf with its arguments interleaved.
+
+    for (( i=0; i < count; i++ )); do
+        args+=( "${argv[i]}" "${argv[i+count]}" )
+    done
+
+    printf -- "$format" "${args[@]}"
 }
 
 
