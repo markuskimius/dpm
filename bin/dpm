@@ -23,9 +23,11 @@ COMMAND:
 
   remove PKGNAME        Remove PKGNAME and any of its unused dependencies.
 
-  update [PKGNAME]      Update PKGNAME, installing any of its new dependency
-                        and removing any stale dependency.  If PKGNAME is
-                        omitted all packages are updated.
+  update [PKGNAME]      Update PKGNAME, installing any new dependency.  Any
+                        stale dependency is not removed.  Use '${SCRIPTNAME}
+                        cleanup' to remove any stale dependency that is no
+                        longer required.  If PKGNAME is omitted all packages
+                        are updated.
 
   recover               Rebuild the file that tracks installed packages and
                         their dependencies.  Any missing dependency is
@@ -216,11 +218,11 @@ function lock-pkgdir() {
 
 function dpm-install() {
     local optstring url pkgname handler
-    local direct=0 recursive=0 trackback="" branch=""
+    local direct=0 safemode=0 recursive=0 trackback="" branch=""
     local unwind=0
 
     # Parse arguments
-    optstring=$(egetopt "drt:b:" "direct,recursive,trackback:,branch:" "$@") || return 1
+    optstring=$(egetopt "dsrt:b:" "direct,safemode,recursive,trackback:,branch:" "$@") || return 1
     eval set -- "$optstring"
 
     while (( $# )); do
@@ -228,6 +230,7 @@ function dpm-install() {
 
         case "$1" in
             -d|--direct)    direct=1              ;;
+            -s|--safemode)  safemode=1            ;;
             -r|--recursive) recursive=1           ;;
             -t|--trackback) trackback=$2 && shift ;;
             -b|--branch)    branch=$2 && shift    ;;
@@ -306,7 +309,13 @@ function dpm-install() {
 
     # Install the dependencies
     if (( ! unwind && recursive )); then
-        dpm-install-deps "$pkgname" "${trackback}|${pkgname}"
+        local flags=( --trackback="${trackback}|${pkgname}" )
+
+        if (( safemode )); then
+            flags+=( --safemode )
+        fi
+
+        dpm-install-deps "${flags[@]}" "$pkgname"
     fi || unwind=30
 
     # Success!
@@ -331,7 +340,7 @@ function dpm-install() {
     fi
 
     # Unwind the installation
-    if (( unwind >= 10 )) && (( $(instfile-getcount "$pkgname") <= 0 )); then
+    if (( unwind >= 10 )) && (( $(instfile-getcount "$pkgname") <= 0 )) && (( ! safemode )); then
         #
         # Unlike above unwinding routines, this code is executed even if the
         # handler-install fails because handler-install may be a user-supplied
@@ -346,27 +355,51 @@ function dpm-install() {
 
 
 function dpm-install-deps() {
-    local pkgname=$1 trackback=$2
+    local optstring pkgname
+    local safemode=0 trackback=""
     local depname depurl depbranch deprest
     local installed=()
     local unwind=0
     local count=0
 
+    # Parse arguments
+    optstring=$(egetopt "st:" "safemode,trackback:" "$@") || return 1
+    eval set -- "$optstring"
+
+    while (( $# )); do
+        [[ "$1" == "--" ]] && shift && break
+
+        case "$1" in
+            -s|--safemode)  safemode=1            ;;
+            -t|--trackback) trackback=$2 && shift ;;
+        esac
+
+        shift
+    done
+
     # Install the dependencies
-    while IFS=\| read -r depname depurl depbranch deprest; do
-        [[ -z "$depbranch" ]] && unset depbranch
-        logger INFO "${pkgname}: Requires '${depname}' from ${depurl}${depbranch+ branch }${depbranch-}:"
+    for pkgname in "$@"; do
+        local flags=( --recursive --trackback="${trackback}" )
 
-        logger-push
-        dpm-install --recursive --trackback="${trackback}" --branch="${depbranch-}" "$depurl" "$depname" \
-        && installed=( "$depname" ) \
-        || unwind=10
-        logger-pop
+        if (( safemode )); then
+            flags+=( --safemode )
+        fi
 
-        # Stop on error
-        (( unwind )) && break
-        (( count += 1 ))
-    done < <(pkg-getdeps "$pkgname")
+        while IFS=\| read -r depname depurl depbranch deprest; do
+            [[ -z "$depbranch" ]] && unset depbranch
+            logger INFO "${pkgname}: Requires '${depname}' from ${depurl}${depbranch+ branch }${depbranch-}:"
+
+            logger-push
+            dpm-install "${flags[@]}" --branch="${depbranch-}" "$depurl" "$depname" \
+            && installed=( "$depname" ) \
+            || unwind=10
+            logger-pop
+
+            # Stop on error
+            (( unwind )) && break
+            (( count += 1 ))
+        done < <(pkg-getdeps "$pkgname")
+    done
 
     # Success!
     if (( ! unwind )); then
@@ -375,12 +408,18 @@ function dpm-install-deps() {
 
     # Unwind the installed packages
     if (( unwind > 0 && count )); then
+        local flags=( --recursive )
+
+        if (( safemode )); then
+            flags+=( --safemode )
+        fi
+
         # Notification
         logger FAIL "${pkgname}: FAILED to install a dependency, remove already installed dependencies..."
 
         logger-push
         for depname in "${installed[@]}"; do
-            dpm-remove --recursive "$depname"
+            dpm-remove "${flags[@]}" "$depname"
         done
         logger-pop
     fi
@@ -468,11 +507,11 @@ function dpm-rename() {
 
 function dpm-remove() {
     local optstring pkgname
-    local direct=0 recursive=0 trackback=""
+    local direct=0 safemode=0 recursive=0 trackback=""
     local isok=1
 
     # Parse arguments
-    optstring=$(egetopt "drt:" "direct,recursive,trackback:" "$@") || return 1
+    optstring=$(egetopt "dsrt:" "direct,safemode,recursive,trackback:" "$@") || return 1
     eval set -- "$optstring"
 
     while (( $# )); do
@@ -480,6 +519,7 @@ function dpm-remove() {
 
         case "$1" in
             -d|--direct)    direct=1              ;;
+            -s|--safemode)  safemode=1            ;;
             -r|--recursive) recursive=1           ;;
             -t|--trackback) trackback=$2 && shift ;;
         esac
@@ -526,7 +566,13 @@ function dpm-remove() {
 
         # Remove the dependencies
         if (( recursive )); then
-            dpm-remove-deps "$pkgname" "${trackback}|${pkgname}" \
+            local flags=( --trackback="${trackback}|${pkgname}" )
+
+            if (( safemode )); then
+                flags+=( --safemode )
+            fi
+
+            dpm-remove-deps "${flags[@]}" "$pkgname" \
             || removeok=0
 
             (( ! removeok )) && isok=0 && continue
@@ -548,7 +594,7 @@ function dpm-remove() {
         fi
 
         # Uninstall the package if needed
-        if (( $(instfile-getcount "$pkgname") <= 0 )); then
+        if (( $(instfile-getcount "$pkgname") <= 0 )) && (( ! safemode )); then
             local url=$(pkg-geturl "$pkgname")
             local branch=$(pkg-getbranch "$pkgname")
             local handler=$(pkg-gethandler "$pkgname")
@@ -580,22 +626,46 @@ function dpm-remove() {
 
 
 function dpm-remove-deps() {
-    local pkgname=$1 trackback=$2
+    local optstring pkgname
+    local safemode=0 trackback=""
     local depname depurl depbranch deprest
     local count=0
     local isok=1
 
+    # Parse arguments
+    optstring=$(egetopt "st:" "safemode,trackback:" "$@") || return 1
+    eval set -- "$optstring"
+
+    while (( $# )); do
+        [[ "$1" == "--" ]] && shift && break
+
+        case "$1" in
+            -s|--safemode)  safemode=1            ;;
+            -t|--trackback) trackback=$2 && shift ;;
+        esac
+
+        shift
+    done
+
     # Remove the dependencies
-    while IFS=\| read -r depname depurl depbranch deprest; do
-        logger INFO "${pkgname}: Depends on ${depname}:"
+    for pkgname in "$@"; do
+        local flags=( --recursive --trackback="${trackback}" )
 
-        logger-push
-        dpm-remove --recursive --trackback="${trackback}" "$depname" \
-        || isok=0
-        logger-pop
+        if (( safemode )); then
+            flags+=( --safemode )
+        fi
 
-        (( count += 1 ))
-    done < <(pkg-getdeps "$pkgname")
+        while IFS=\| read -r depname depurl depbranch deprest; do
+            logger INFO "${pkgname}: Depends on ${depname}:"
+
+            logger-push
+            dpm-remove "${flags[@]}" "$depname" \
+            || isok=0
+            logger-pop
+
+            (( count += 1 ))
+        done < <(pkg-getdeps "$pkgname")
+    done
 
     (( isok ))
 }
@@ -687,7 +757,7 @@ function dpm-update() {
                     logger INFO "${pkgname}: No longer requires '${depname}':"
 
                     logger-push
-                    dpm-remove --recursive --trackback="$pkgname" "$depname" \
+                    dpm-remove --safemode --recursive --trackback="$pkgname" "$depname" \
                     || updateok=0
                     logger-pop
                 fi
@@ -742,7 +812,7 @@ function dpm-recover() {
         logger-push
 
         for pkgname in "${dinstall[@]}"; do
-            dpm-install --direct --recursive "$pkgname" || isok=0
+            dpm-install --direct --safemode --recursive "$pkgname" || isok=0
         done
 
         logger-pop
