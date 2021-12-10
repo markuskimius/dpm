@@ -1388,7 +1388,7 @@ function egetopt() {
     if command -v getopt >/dev/null && getopt -T >/dev/null; (( $? == 4 )); then
         getopt -o "$shortopts" --long "$longopts" -- "$@"
     else
-        local OPTOPT OPTARG OPTIND opt
+        local OPTARG OPTIND OPTERR opt
         local output=()
         local isok=1
 
