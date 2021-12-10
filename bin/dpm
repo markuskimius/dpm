@@ -19,6 +19,8 @@ COMMAND:
                         If PKGNAME is omitted a name is chosen based on the
                         URL.
 
+  mv PKGNAME1 PKGNAME2  Rename PKGNAME1 to PKGNAME2 if possible.
+
   remove PKGNAME        Remove PKGNAME and any of its unused dependencies.
 
   update [PKGNAME]      Update PKGNAME, installing any of its new dependency
@@ -79,6 +81,7 @@ function main() {
     # Check arguments
     case "${1-}" in
         install)      shift && action=( dpm-install --recursive --direct ) && lock=1 ;;
+        mv)           shift && action=( dpm-rename                       ) && lock=1 ;;
         remove)       shift && action=( dpm-remove --recursive --direct  ) && lock=1 ;;
         update)       shift && action=( dpm-update                       ) && lock=1 ;;
         recover)      shift && action=( dpm-recover                      ) && lock=1 ;;
@@ -380,6 +383,83 @@ function dpm-install-deps() {
             dpm-remove --recursive "$depname"
         done
         logger-pop
+    fi
+
+    return 1
+}
+
+
+function dpm-rename() {
+    local pkgname1=$1
+    local pkgname2=$2
+    local flags
+    local unwind=0
+
+    # Sanity check
+    [[ -z "$pkgname1" || -z "$pkgname2" ]] && logger FAIL "Must specify PKGNAME1 and PKGNAME2." && return 1
+
+    # Notification
+    logger INFO "RENAME '${pkgname1}' to '${pkgname2}'..."
+
+    # PKGNAME1 must exist
+    if ! pkg-isinstalled "$pkgname1"; then
+        logger ERROR "${pkgname1}: No such package."
+        return 1
+    fi
+
+    # Get the flags for PKGNAME1
+    flags=$(instfile-getflags "$pkgname1")
+
+    # PKGNAME1 must be direct installed and must have no other dependency
+    if [[ "$flags" != *D* ]] || (( $(instfile-getcount "$pkgname1") != 1 )); then
+        logger ERROR "${pkgname1}: Cannot be renamed, has dependencies."
+        return 1
+    fi
+
+    # PKGNAME2 must not exist
+    if pkg-isinstalled "$pkgname2"; then
+        logger ERROR "${pkgname2}: Already exists."
+        return 1
+    fi
+
+    # Rename
+    if (( ! unwind )); then
+        logger INFO "${pkgname1}: Rename package directory..."
+        mv "${PKGDIR}/${pkgname1}" "${PKGDIR}/${pkgname2}"
+    fi || unwind=10
+
+    # Update the installation record
+    if (( ! unwind )); then
+        logger INFO "${pkgname2}: Increment installation record..."
+
+        instfile-incr --flags="$flags" "$pkgname2"
+    fi || unwind=20
+
+    if (( ! unwind )); then
+        logger INFO "${pkgname1}: Decrement installation record..."
+
+        instfile-decr --flags="$flags" "$pkgname1"
+    fi || unwind=30
+
+    # Success!
+    if (( ! unwind )); then
+        logger GOOD "${pkgname2}: RENAME SUCCESS!"
+        return 0
+    fi
+
+    # Notification
+    logger FAIL "${pkgname1}: FAILED to rename."
+
+    # Unwind the incrementing of the installation record
+    if (( unwind > 20 )); then
+        logger INFO "${pkgname2}: Rollback installation record..."
+        instfile-decr --flags="$flags" "$pkgname2"
+    fi
+
+    # Unwind the renaming of the directory
+    if (( unwind > 10 )); then
+        logger INFO "${pkgname2}: Rollback renaming of the package directory..."
+        mv "${PKGDIR}/${pkgname2}" "${PKGDIR}/${pkgname1}"
     fi
 
     return 1
