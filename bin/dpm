@@ -845,6 +845,18 @@ function dpm-list() {
     # Otherwise we print them outright for speed.
     #
 
+    # Adjust the first column width in short option
+    if (( ! long )); then
+        local width=${#header[0]}
+        local pkgname
+
+        while IFS= read -r pkgname; do
+            (( width < ${#pkgname} )) && width=${#pkgname}
+        done < <(installed-list)
+
+        widths[0]=$width
+    fi
+
     # Header in short option
     if (( ! long )); then
         iprintf "$format\n" "${widths[@]}" "${header[@]}"
