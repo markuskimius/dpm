@@ -16,16 +16,20 @@ Usage: ${SCRIPTNAME} COMMAND [ARGUMENTS]
 COMMAND:
   install [-b,--branch=BRANCH] URL [PKGNAME]
                         Install PKGNAME from URL and its dependencies, if any.
-                        If PKGNAME is omitted, a name is chosen based on the
+                        If PKGNAME is omitted a name is chosen based on the
                         URL.
 
   remove PKGNAME        Remove PKGNAME and any of its unused dependencies.
 
-  update [PKGNAME]      Update PKGNAME.  If PKGNAME is omitted, all packages
-                        are updated.
+  update [PKGNAME]      Update PKGNAME, installing any of its new dependency
+                        and removing any stale dependency.  If PKGNAME is
+                        omitted all packages are updated.
 
-  recover               Rebuild the installation records and install missing
-                        dependencies.
+  recover               Rebuild the file that tracks installed packages and
+                        their dependencies.  Any missing dependency is
+                        installed but stale dependency is not removed; use
+                        '${SCRIPTNAME} cleanup' to remove any stale dependency
+                        that is no longer required.
 
   cleanup               Delete any package installed as a dependency but is no
                         longer required.
