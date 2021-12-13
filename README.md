@@ -3,15 +3,16 @@
 ## What does it do?
 
 - Install packages directly from a git server (such as github).
-- Install dependencies automatically, if `etc/dpm-deps` is defined.
-- Track which package was installed directly vs. indirectly as a dependency,
+- Install dependencies automatically, if [specified](#dependency).
+- Track which package was installed directly vs. as a dependency,
   and remove the dependencies automatically when the directly installed package
   is uninstalled.
 
 
 ## Installation
 
-Clone dpm then source the output of `dpm sourceme` from `.bashrc`:
+Clone dpm then source the output of `dpm sourceme` from `.bashrc`.
+For example:
 
 ```bash
 $ mkdir $HOME/src
@@ -135,15 +136,15 @@ $HOME/.dpmrc
 /usr/etc/dpmrc
 /etc/dpmrc
 ```
+Only the first file found is loaded.
 
-For example:
+Example content:
 
 ```bash
 PKGDIR=$HOME/opt
 ```
 
 The syntax is in BASH, so there can be no whitespace around `=`.
-Only the first file in the list is loaded.
 
 
 ## License
