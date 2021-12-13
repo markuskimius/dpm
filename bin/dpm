@@ -280,7 +280,7 @@ function dpm-install() {
     logger INFO "INSTALL '${pkgname}' from ${url}${branch+ branch }${branch-} to ${PKGDIR}/${pkgname} ..."
 
     # Don't allow a package to be direct-installed more than once
-    if pkg-isinstalled "$pkgname" && (( direct )) && [[ "$(instfile-getflags "$pkgname")" == *D* ]]; then
+    if pkg-isinstalled "$pkgname" && (( direct )) && [[ "$(instfile-flags "$pkgname")" == *D* ]]; then
         logger INFO "${pkgname}: Already direct-installed."
         return 0
     fi
@@ -298,14 +298,14 @@ function dpm-install() {
 
         if [[ "$url" == "$installed_url" && ( -z "${branch-}" || "${branch-}" == "$installed_branch" ) ]]; then
             logger INFO "${pkgname}: Already installed."
-            REFDEPTH=$(instfile-refdepth "$pkgname")
+            REFHEIGHT=$(instfile-height "$pkgname")
         else
             logger FAIL "${pkgname}: Already installed but from ${installed_url} branch ${installed_branch}, cannot proceed."
             false
         fi
     else
         "${handler}-install" "$url" "$pkgname" "${branch-}" 2>&1 | logger "${handler}"
-        REFDEPTH=0
+        REFHEIGHT=0
     fi || unwind=10
 
     # Install the dependencies
@@ -317,12 +317,12 @@ function dpm-install() {
         fi
 
         dpm-install-deps "${flags[@]}" "$pkgname"
-        (( REFDEPTH += 1 ))
+        (( REFHEIGHT += 1 ))
     fi || unwind=20
 
     # Add the installation record
     if (( ! unwind )); then
-        local flags=( -d "$REFDEPTH" )
+        local flags=( -H "$REFHEIGHT" )
 
         if (( direct )); then
             flags+=( -fD )
@@ -348,7 +348,7 @@ function dpm-install() {
     fi
 
     # Unwind the installation
-    if (( unwind >= 10 )) && (( $(instfile-refcount "$pkgname") <= 0 )) && (( ! safemode )); then
+    if (( unwind >= 10 )) && (( $(instfile-numref "$pkgname") <= 0 )) && (( ! safemode )); then
         #
         # Unlike above unwinding routines, this code is executed even if the
         # handler-install fails because handler-install may be a user-supplied
@@ -388,7 +388,7 @@ function dpm-install-deps() {
     # Install the dependencies
     for pkgname in "$@"; do
         local flags=( -rt "${trackback}" )
-        local depth=0
+        local height=0
 
         if (( safemode )); then
             flags+=( -s )
@@ -401,7 +401,7 @@ function dpm-install-deps() {
             logger-push
             dpm-install "${flags[@]}" -b "${depbranch-}" "$depurl" "$depname" \
             && installed=( "$depname" ) \
-            && depth=$(( REFDEPTH > depth ? REFDEPTH : depth )) \
+            && height=$(( REFHEIGHT > height ? REFHEIGHT : height )) \
             || unwind=10
             logger-pop
 
@@ -410,7 +410,7 @@ function dpm-install-deps() {
             (( count += 1 ))
         done < <(pkg-getdeps "$pkgname")
 
-        REFDEPTH=$depth
+        REFHEIGHT=$height
     done
 
     # Success!
@@ -443,7 +443,7 @@ function dpm-install-deps() {
 function dpm-rename() {
     local pkgname1=$1
     local pkgname2=$2
-    local flags depth
+    local flags height
     local unwind=0
 
     # Sanity check
@@ -459,11 +459,11 @@ function dpm-rename() {
     fi
 
     # Get the flags for PKGNAME1
-    flags=$(instfile-getflags "$pkgname1")
-    depth=$(instfile-refdepth "$pkgname1")
+    flags=$(instfile-flags "$pkgname1")
+    height=$(instfile-height "$pkgname1")
 
     # PKGNAME1 must be direct installed and must have no other dependency
-    if [[ "$flags" != *D* ]] || (( $(instfile-refcount "$pkgname1") != 1 )); then
+    if [[ "$flags" != *D* ]] || (( $(instfile-numref "$pkgname1") != 1 )); then
         logger ERROR "${pkgname1}: Cannot be renamed, has dependencies."
         return 1
     fi
@@ -484,7 +484,7 @@ function dpm-rename() {
     if (( ! unwind )); then
         logger INFO "${pkgname2}: Increment installation record..."
 
-        instfile-incr -f "$flags" -d "$depth" "$pkgname2"
+        instfile-incr -f "$flags" -H "$height" "$pkgname2"
     fi || unwind=20
 
     if (( ! unwind )); then
@@ -557,14 +557,14 @@ function dpm-remove() {
         fi
 
         # Don't allow a package to be direct-removed if it wasn't direct-installed
-        if (( direct )) && [[ "$(instfile-getflags "$pkgname")" != *D* ]]; then
+        if (( direct )) && [[ "$(instfile-flags "$pkgname")" != *D* ]]; then
             logger FAIL "${pkgname}: Not direct-installed, cannot be direct-removed."
             isok=0
             continue
         fi
 
         # Don't allow a direct-installed package to be removed by a dependency-removal
-        if (( ! direct )) && (( $(instfile-refcount "$pkgname") == 1 )) && [[ "$(instfile-getflags "$pkgname")" == *D* ]]; then
+        if (( ! direct )) && (( $(instfile-numref "$pkgname") == 1 )) && [[ "$(instfile-flags "$pkgname")" == *D* ]]; then
             logger FAIL "${pkgname}: Not installed as a dependency, cannot be direct-removed."
             isok=0
             continue
@@ -607,7 +607,7 @@ function dpm-remove() {
         fi
 
         # Uninstall the package if needed
-        if (( $(instfile-refcount "$pkgname") <= 0 )) && (( ! safemode )); then
+        if (( $(instfile-numref "$pkgname") <= 0 )) && (( ! safemode )); then
             local url=$(pkg-geturl "$pkgname")
             local branch=$(pkg-getbranch "$pkgname")
             local handler=$(pkg-gethandler "$pkgname")
@@ -642,7 +642,6 @@ function dpm-remove-deps() {
     local optstring pkgname
     local safemode=0 trackback=""
     local depname depurl depbranch deprest
-    local count=0
     local isok=1
 
     # Parse arguments
@@ -675,8 +674,6 @@ function dpm-remove-deps() {
             dpm-remove "${flags[@]}" "$depname" \
             || isok=0
             logger-pop
-
-            (( count += 1 ))
         done < <(pkg-getdeps "$pkgname")
     done
 
@@ -802,8 +799,8 @@ function dpm-recover() {
 
     # Get the list of direct-installed and active packages
     while IFS= read -r pkgname; do
-        [[ "$(instfile-getflags "$pkgname")" == *D* ]] && dinstall+=( "$pkgname" ) || :
-        [[ "$(instfile-getflags "$pkgname")" == *A* ]] && active+=( "$pkgname" ) || :
+        [[ "$(instfile-flags "$pkgname")" == *D* ]] && dinstall+=( "$pkgname" ) || :
+        [[ "$(instfile-flags "$pkgname")" == *A* ]] && active+=( "$pkgname" ) || :
     done < <(installed-list) || isok=0
 
     # Backup the installation file
@@ -864,8 +861,8 @@ function dpm-cleanup() {
 
     # Get the list of packages to remove
     while IFS= read -r pkgname; do
-        if (( $(instfile-refcount "$pkgname") == 0 )); then
-            local instflags=$(instfile-getflags "$pkgname")
+        if (( $(instfile-numref "$pkgname") == 0 )); then
+            local instflags=$(instfile-flags "$pkgname")
             local flags=()
 
             logger INFO "${pkgname}: No longer used:"
@@ -896,9 +893,9 @@ function dpm-cleanup() {
 function dpm-list() {
     local optstring long=0
     local format="  %*s  %*s  %*s  %-*s"
-    local header=( "PACKAGE" "REF" "DEPTH" "FLAGS" )
-    local hline=(  "-------" "---" "-----" "-----" )
-    local widths=( 15 3 5 5 )
+    local header=( "PACKAGE" "NUMREF" "HEIGHT" "FLAGS" )
+    local hline=(  "-------" "------" "------" "-----" )
+    local widths=( 15 6 6 5 )
     local delim=$'\x02'
     local rows=()
     local isok=1
@@ -959,12 +956,12 @@ function dpm-list() {
         local pkgname
 
         while IFS= read -r pkgname; do
-            local count=$(instfile-refcount "$pkgname")
-            local depth=$(instfile-refdepth "$pkgname")
-            local flags=$(instfile-getflags "$pkgname")
+            local numref=$(instfile-numref "$pkgname")
+            local height=$(instfile-height "$pkgname")
+            local flags=$(instfile-flags "$pkgname")
 
             # If there are issues
-            (( count <= 0 )) && isok=0
+            (( numref <= 0 )) && isok=0
 
             if (( long )); then
                 local url=$(pkg-geturl "$pkgname")
@@ -974,15 +971,15 @@ function dpm-list() {
                 [[ -z "$url"     ]] && url="?"    && isok=0
                 [[ -z "$branch"  ]] && branch="?" && isok=0
 
-                rows+=( "${pkgname}${delim}${count}${delim}${depth}${delim}${flags}${delim}${branch}${delim}${url}" )
+                rows+=( "${pkgname}${delim}${numref}${delim}${height}${delim}${flags}${delim}${branch}${delim}${url}" )
                 (( ${widths[0]} < ${#pkgname}  )) && widths[0]=${#pkgname}
-                (( ${widths[1]} < ${#count}    )) && widths[1]=${#count}
-                (( ${widths[2]} < ${#depth}    )) && widths[2]=${#depth}
+                (( ${widths[1]} < ${#numref}   )) && widths[1]=${#numref}
+                (( ${widths[2]} < ${#height}   )) && widths[2]=${#height}
                 (( ${widths[3]} < ${#flags}    )) && widths[3]=${#flags}
                 (( ${widths[4]} < ${#branch}   )) && widths[4]=${#branch}
                 (( ${widths[5]} < ${#url}      )) && widths[5]=${#url}
             else
-                iprintf "$format\n" "${widths[@]}" "$pkgname" "$count" "$depth" "$flags"
+                iprintf "$format\n" "${widths[@]}" "$pkgname" "$numref" "$height" "$flags"
             fi
         done < <(installed-list)
     fi
@@ -992,18 +989,18 @@ function dpm-list() {
         local pkgname
 
         while IFS= read -r pkgname; do
-            local count=$(instfile-refcount "$pkgname")
-            local depth=$(instfile-refdepth "$pkgname")
-            local flags=$(instfile-getflags "$pkgname")
+            local numref=$(instfile-numref "$pkgname")
+            local height=$(instfile-height "$pkgname")
+            local flags=$(instfile-flags "$pkgname")
 
             if (( long )); then
-                rows+=( "${pkgname}${delim}${count}${delim}${depth}${delim}${flags}${delim}-${delim}-" )
+                rows+=( "${pkgname}${delim}${numref}${delim}${height}${delim}${flags}${delim}-${delim}-" )
                 (( ${widths[0]} < ${#pkgname}  )) && widths[0]=${#pkgname}
-                (( ${widths[1]} < ${#count}    )) && widths[1]=${#count}
-                (( ${widths[2]} < ${#depth}    )) && widths[2]=${#depth}
+                (( ${widths[1]} < ${#numref}   )) && widths[1]=${#numref}
+                (( ${widths[2]} < ${#height}   )) && widths[2]=${#height}
                 (( ${widths[3]} < ${#flags}    )) && widths[3]=${#flags}
             else
-                iprintf "$format\n" "${widths[@]}" "$pkgname" "$count" "$depth" "$flags"
+                iprintf "$format\n" "${widths[@]}" "$pkgname" "$numref" "$height" "$flags"
             fi
 
             isok=0
@@ -1120,11 +1117,11 @@ function dpm-active() {
     local pkgname
     local row
 
-    # Sort by depth
+    # Sort by height
     while IFS= read -r pkgname; do
-        local depth=$(instfile-refdepth "$pkgname")
+        local height=$(instfile-height "$pkgname")
 
-        active[depth]+="|$pkgname"
+        active[height]+="|$pkgname"
     done < <(active-list)
 
     # Print
@@ -1304,9 +1301,9 @@ function instfile-clear() {
 function instfile-incr() {
     local instfile="${PKGDIR}/.installed"
     local tmpfile="${instfile}.tmp"
-    local pkgname flags count depth rest
+    local pkgname flags numref height rest
     local setflags=""
-    local setdepth=0
+    local newheight=0
     local updated=()
     local optstring
     local isok=1
@@ -1315,15 +1312,15 @@ function instfile-incr() {
     INSTALLED=
 
     # Parse arguments
-    optstring=$(egetopt "d:f:" "depth:,flags:" "$@") || return 1
+    optstring=$(egetopt "H:f:" "height:,flags:" "$@") || return 1
     eval set -- "$optstring"
 
     while (( $# )); do
         [[ "$1" == "--" ]] && shift && break
 
         case "$1" in
-            -d|--depth) setdepth=$2 && shift ;;
-            -f|--flags) setflags=$2 && shift ;;
+            -H|--height) newheight=$2 && shift ;;
+            -f|--flags)  setflags=$2 && shift ;;
         esac
 
         shift
@@ -1333,22 +1330,22 @@ function instfile-incr() {
     rm -f "$tmpfile"
 
     # Update existing records
-    while IFS=\| read -r pkgname flags count depth rest; do
+    while IFS=\| read -r pkgname flags numref height rest; do
         if [[ " $* " == *" $pkgname "* ]]; then
-            depth=$setdepth
-            count=$(( count + 1 ))
+            height=$newheight
+            numref=$(( numref + 1 ))
             [[ "$flags" != *"$setflags"* ]] && flags+=$setflags
 
             updated+=( "$pkgname" )
         fi
 
-        printf "%s|%s|%s|%s|%s\n" "$pkgname" "$flags" "$count" "$depth" "$rest"
+        printf "%s|%s|%s|%s|%s\n" "$pkgname" "$flags" "$numref" "$height" "$rest"
     done < "$instfile" >> "$tmpfile" || isok=0
 
     # Add new records
     for pkgname in "$@"; do
         if [[ " ${updated[*]} " != *" $pkgname "* ]]; then
-            printf "%s|%s|%s|%s|%s\n" "$pkgname" "$setflags" "1" "$setdepth" ""
+            printf "%s|%s|%s|%s|%s\n" "$pkgname" "$setflags" "1" "$newheight" ""
         fi
     done >> "$tmpfile" || isok=0
 
@@ -1359,7 +1356,7 @@ function instfile-incr() {
 function instfile-decr() {
     local instfile="${PKGDIR}/.installed"
     local tmpfile="${instfile}.tmp"
-    local pkgname flags count depth rest
+    local pkgname flags numref height rest
     local clearflags=""
     local optstring
     local isok=1
@@ -1382,14 +1379,14 @@ function instfile-decr() {
     done
 
     # Update the installation file
-    while IFS=\| read -r pkgname flags count depth rest; do
+    while IFS=\| read -r pkgname flags numref height rest; do
         if [[ " $* " == *" $pkgname "* ]]; then
-            count=$(( count - 1 ))
+            numref=$(( numref - 1 ))
             flags=${flags//$clearflags/}
         fi
 
-        if (( count > 0 )); then
-            printf "%s|%s|%s|%s|%s\n" "$pkgname" "$flags" "$count" "$depth" "$rest"
+        if (( numref > 0 )); then
+            printf "%s|%s|%s|%s|%s\n" "$pkgname" "$flags" "$numref" "$height" "$rest"
         fi
     done < "$instfile" > "$tmpfile" || isok=0
 
@@ -1415,14 +1412,14 @@ function instfile-get() {
 }
 
 
-function instfile-getflags() {
+function instfile-flags() {
     local pkgname=$1
 
     instfile-get "$pkgname" 1
 }
 
 
-function instfile-refcount() {
+function instfile-numref() {
     local pkgname=$1
     local value=$(instfile-get "$pkgname" 2)
 
@@ -1432,7 +1429,7 @@ function instfile-refcount() {
 }
 
 
-function instfile-refdepth() {
+function instfile-height() {
     local pkgname=$1
     local value=$(instfile-get "$pkgname" 3)
 
