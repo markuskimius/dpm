@@ -124,6 +124,9 @@ PKGNAME|URL|BRANCH
 
 `BRANCH` is optional.  If not set, the default branch is pulled.
 
+If you don't have write access to PKG1 that depends on PKG2, you can create a
+meta-package PKG0 that depends on PKG1 and PKG2, and install PKG0.
+
 
 ## Configuration
 
@@ -138,7 +141,7 @@ $HOME/.dpmrc
 ```
 Only the first file found is loaded.
 
-Example content:
+Example:
 
 ```bash
 PKGDIR=$HOME/opt
