@@ -87,7 +87,7 @@ $
     When a package is activated, its `etc/bashrc`, if it exists, is sourced
     upon startup (it is included in the output of `dpm sourceme`).
     Furthermore, the name of the package is added to the list of package names
-    in `$DPM/.activated`, in the order of lowest height to the highest, that
+    in `$DPM/.active`, in the order of lowest height to the highest, that
     may be read by an application to take an action only on activated packages.
     To activate and deactive a package, use the `dpm activate` and `dpm
     deactivate` commands, respectively.
