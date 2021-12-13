@@ -832,7 +832,7 @@ function dpm-recover() {
     fi
 
     # Re-activate the active packages
-    if (( isok && ${#active[@]} )); then
+    if (( isok )); then
         # Notification
         logger INFO "Reactive packages..."
 
@@ -1140,6 +1140,9 @@ function dpm-active() {
 function dpm-activate() {
     local activefile="${PKGDIR}/.active"
 
+    # Remove the activefile in case noclobber is set
+    rm -f "$activefile"
+
     instfile-set -fA "$@" \
     && dpm-active > "$activefile"
 }
@@ -1147,6 +1150,9 @@ function dpm-activate() {
 
 function dpm-deactivate() {
     local activefile="${PKGDIR}/.active"
+
+    # Remove the activefile in case noclobber is set
+    rm -f "$activefile"
 
     instfile-clear -fA "$@" \
     && dpm-active > "$activefile"
