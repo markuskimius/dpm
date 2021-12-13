@@ -121,9 +121,9 @@ function load-config() {
     # Defaults
     set -o pipefail
 
-    # Clear globals
+    # Reset globals
     LOGGER_INDENT=0
-    INSTALLED=
+    instfile-memoize
 
     # Source the first file found in CONFIG[], if any
     for file in "${CONFIGS[@]}"; do
@@ -1172,7 +1172,7 @@ function instfile-incr() {
         fi
     done >> "$tmpfile" || isok=0
 
-    (( isok )) && mv -f "$tmpfile" "$instfile"
+    (( isok )) && mv -f "$tmpfile" "$instfile" && instfile-memoize
 }
 
 
@@ -1213,7 +1213,7 @@ function instfile-decr() {
         fi
     done < "$instfile" > "$tmpfile" || isok=0
 
-    (( isok )) && mv -f "$tmpfile" "$instfile"
+    (( isok )) && mv -f "$tmpfile" "$instfile" && instfile-memoize
 }
 
 
