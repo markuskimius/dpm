@@ -40,9 +40,13 @@ COMMAND:
 
   list [-l,--long]      List installed packages.
 
-  sourceme              Source this output to setup BASH.
+  sourceme              Source this output to setup BASH.  The output contains
+                        the script to setup DPM core as well as the script to
+                        setup any active package.
 
-  sourceit PKGNAME      Source this output to setup BASH for PKGNAME.
+  activate PKGNAME      Activate PKGNAME.
+
+  deactivate PKGNAME    Deactivate PKGNAME.
 
 FILES:
   Config files:$(printf "\n    %s" "${CONFIGS[@]}")
@@ -91,8 +95,11 @@ function main() {
         recover)      shift && action=( dpm-recover      ) && lock=1 ;;
         cleanup)      shift && action=( dpm-cleanup      ) && lock=1 ;;
         list)         shift && action=( dpm-list         ) && lock=1 ;;
-        sourceme)     shift && action=( dpm-sourceme     ) ;;
+        sourceme)     shift && action=( dpm-sourceme     ) && lock=1 ;;
         sourceit)     shift && action=( dpm-sourceit     ) && lock=1 ;;
+        active)       shift && action=( dpm-active       ) && lock=1 ;;
+        activate)     shift && action=( dpm-activate     ) && lock=1 ;;
+        deactivate)   shift && action=( dpm-deactivate   ) && lock=1 ;;
         help)         shift && action=( usage            ) ;;
         *)            logger FAIL "${1-(none)}: Invalid COMMAND"
                       isok=0
@@ -786,17 +793,17 @@ function dpm-recover() {
     local instfile="${PKGDIR}/.installed"
     local bkupfile="${instfile}.bkup"
     local dinstall=()
+    local active=()
     local pkgname
     local isok=1
 
     # Notification
     logger INFO "RECOVER all packages..."
 
-    # Get the list of direct-installed packages
+    # Get the list of direct-installed and active packages
     while IFS= read -r pkgname; do
-        if [[ "$(instfile-getflags "$pkgname")" == *D* ]]; then
-            dinstall+=( "$pkgname" )
-        fi
+        [[ "$(instfile-getflags "$pkgname")" == *D* ]] && dinstall+=( "$pkgname" ) || :
+        [[ "$(instfile-getflags "$pkgname")" == *A* ]] && active+=( "$pkgname" ) || :
     done < <(installed-list) || isok=0
 
     # Backup the installation file
@@ -822,6 +829,14 @@ function dpm-recover() {
         done
 
         logger-pop
+    fi
+
+    # Re-activate the active packages
+    if (( isok && ${#active[@]} )); then
+        # Notification
+        logger INFO "Reactive packages..."
+
+        dpm-activate "${active[@]}" || isok=0
     fi
 
     # Remove the backup installation file
@@ -1044,6 +1059,12 @@ function dpm-sourceme() {
     local tclpath=0
     local pythonpath=0
 
+    cat <<EOF
+##############################################################################
+# DPM CORE
+##############################################################################
+EOF
+
     while IFS= read -r pkgname; do
         local pkgpath="${PKGDIR}/${pkgname}"
 
@@ -1056,6 +1077,18 @@ function dpm-sourceme() {
     (( path )) && printf "%s\n" "export PATH"
     (( tclpath )) && printf "%s\n" "export TCLLIBPATH"
     (( pythonpath )) && printf "%s\n" "export PYTHONPATH"
+
+    # Active packages
+    while IFS= read -r pkgname; do
+        cat <<EOF
+
+##############################################################################
+# PACKAGE: $pkgname
+##############################################################################
+EOF
+
+        dpm-sourceit "$pkgname"
+    done < <(dpm-active)
 
     return 0
 }
@@ -1079,6 +1112,44 @@ function dpm-sourceit() {
     done
 
     (( isok ))
+}
+
+
+function dpm-active() {
+    local active=()
+    local pkgname
+    local row
+
+    # Sort by depth
+    while IFS= read -r pkgname; do
+        local depth=$(instfile-refdepth "$pkgname")
+
+        active[depth]+="|$pkgname"
+    done < <(active-list)
+
+    # Print
+    for row in "${active[@]}"; do
+        local pkgs=()
+
+        IFS=\| read -ra pkgs <<<"${row:1}"
+        printf "%s\n" "${pkgs[@]}"
+    done
+}
+
+
+function dpm-activate() {
+    local activefile="${PKGDIR}/.active"
+
+    instfile-set -fA "$@" \
+    && dpm-active > "$activefile"
+}
+
+
+function dpm-deactivate() {
+    local activefile="${PKGDIR}/.active"
+
+    instfile-clear -fA "$@" \
+    && dpm-active > "$activefile"
 }
 
 
@@ -1119,6 +1190,108 @@ function missing-list() {
             fi
         done <<<"$INSTALLED"
     fi
+}
+
+
+function active-list() {
+    local pkgname flags rest
+
+    #
+    # Return name of any package in the installation record with the active
+    # flag set.
+    #
+
+    instfile-memoize
+
+    if [[ -n "$INSTALLED" ]]; then
+        while IFS=\| read -r pkgname flags rest; do
+            if [[ "$flags" == *A* ]]; then
+                printf "%s\n" "$pkgname"
+            fi
+        done <<<"$INSTALLED"
+    fi
+}
+
+
+function instfile-set() {
+    local instfile="${PKGDIR}/.installed"
+    local tmpfile="${instfile}.tmp"
+    local pkgname flags rest
+    local setflags=""
+    local optstring
+    local isok=1
+
+    # Clear the memoized data
+    INSTALLED=
+
+    # Parse arguments
+    optstring=$(egetopt "f:" "flags:" "$@") || return 1
+    eval set -- "$optstring"
+
+    while (( $# )); do
+        [[ "$1" == "--" ]] && shift && break
+
+        case "$1" in
+            -f|--flags) setflags=$2 && shift ;;
+        esac
+
+        shift
+    done
+
+    # Delete tmpfile in case noclobber is set
+    rm -f "$tmpfile"
+
+    # Update records
+    while IFS=\| read -r pkgname flags rest; do
+        if [[ " $* " == *" $pkgname "* ]]; then
+            [[ "$flags" != *"$setflags"* ]] && flags+=$setflags
+        fi
+
+        printf "%s|%s|%s\n" "$pkgname" "$flags" "$rest"
+    done < "$instfile" >> "$tmpfile" || isok=0
+
+    (( isok )) && mv -f "$tmpfile" "$instfile" && instfile-memoize
+}
+
+
+function instfile-clear() {
+    local instfile="${PKGDIR}/.installed"
+    local tmpfile="${instfile}.tmp"
+    local pkgname flags rest
+    local clearflags=""
+    local optstring
+    local isok=1
+
+    # Clear the memoized data
+    INSTALLED=
+
+    # Parse arguments
+    optstring=$(egetopt "f:" "flags:" "$@") || return 1
+    eval set -- "$optstring"
+
+    while (( $# )); do
+        [[ "$1" == "--" ]] && shift && break
+
+        case "$1" in
+            -f|--flags) clearflags=$2 && shift ;;
+        esac
+
+        shift
+    done
+
+    # Delete tmpfile in case noclobber is set
+    rm -f "$tmpfile"
+
+    # Update records
+    while IFS=\| read -r pkgname flags rest; do
+        if [[ " $* " == *" $pkgname "* ]]; then
+            flags=${flags//$clearflags/}
+        fi
+
+        printf "%s|%s|%s\n" "$pkgname" "$flags" "$rest"
+    done < "$instfile" >> "$tmpfile" || isok=0
+
+    (( isok )) && mv -f "$tmpfile" "$instfile" && instfile-memoize
 }
 
 
