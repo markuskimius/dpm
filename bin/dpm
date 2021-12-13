@@ -123,6 +123,7 @@ function load-config() {
 
     # Reset globals
     LOGGER_INDENT=0
+    INSTALLED=""
     instfile-memoize
 
     # Source the first file found in CONFIG[], if any
