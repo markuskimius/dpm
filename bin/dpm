@@ -789,6 +789,7 @@ function dpm-update() {
 function dpm-recover() {
     local instfile="${PKGDIR}/.installed"
     local bkupfile="${instfile}.bkup"
+    local failfile="${instfile}.fail"
     local dinstall=()
     local active=()
     local pkgname
@@ -846,7 +847,14 @@ function dpm-recover() {
     fi
 
     # Notification
-    logger FAIL "${pkgname}: FAILED to recover, backup installation record at '${bkupfile}'"
+    logger FAIL "FAILED to recover"
+
+    logger INFO "Revert installation record from '${bkupfile}'..." \
+    && rm -f "$failfile"              \
+    && mv -f "$instfile" "$failfile"  \
+    && mv -f "$bkupfile" "$instfile"  \
+    && logger INFO "Revert complete." \
+    || logger INFO "Revert failed."
 
     return 1
 }
