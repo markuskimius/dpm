@@ -11,13 +11,13 @@
 
 ## Installation
 
-Clone dpm then source the output of `dpm sourceme` from `.bashrc`.
+Clone dpm then evaluate the output of `dpm setup` from `.bashrc`.
 For example:
 
 ```bash
 $ mkdir $HOME/src
 $ git -C $HOME/src clone https://github.com/markuskimius/dpm.git
-$ echo '[[ -z "$DPM" ]] && source <($HOME/src/dpm/bin/dpm sourceme)' >> ~/.bashrc
+$ echo '[[ -z "$DPM" ]] && eval "$($HOME/src/dpm/bin/dpm setup)"' >> ~/.bashrc
 ```
 
 Note that `$HOME/dpm` is a reserved directory; do not clone `dpm` as it.

@@ -40,7 +40,7 @@ COMMAND:
 
   list [-l,--long]      List installed packages.
 
-  sourceme              Source this output to setup BASH.  The output contains
+  setup                 eval this output to setup BASH.  The output contains
                         the script to setup DPM core as well as the script to
                         setup any active package.
 
@@ -95,8 +95,7 @@ function main() {
         recover)      shift && action=( dpm-recover      ) && lock=1 ;;
         cleanup)      shift && action=( dpm-cleanup      ) && lock=1 ;;
         list)         shift && action=( dpm-list         ) && lock=1 ;;
-        sourceme)     shift && action=( dpm-sourceme     ) && lock=1 ;;
-        sourceit)     shift && action=( dpm-sourceit     ) && lock=1 ;;
+        setup)        shift && action=( dpm-setup        ) && lock=1 ;;
         active)       shift && action=( dpm-active       ) && lock=1 ;;
         activate)     shift && action=( dpm-activate     ) && lock=1 ;;
         deactivate)   shift && action=( dpm-deactivate   ) && lock=1 ;;
@@ -1058,7 +1057,7 @@ function dpm-list() {
 }
 
 
-function dpm-sourceme() {
+function dpm-setup() {
     local pkgname
     local path=0
     local tclpath=0
@@ -1092,14 +1091,14 @@ EOF
 ##############################################################################
 EOF
 
-        dpm-sourceit "$pkgname"
+        pkg-setup "$pkgname"
     done < <(dpm-active)
 
     return 0
 }
 
 
-function dpm-sourceit() {
+function pkg-setup() {
     local pkgname
     local isok=1
 
