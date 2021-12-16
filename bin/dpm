@@ -63,6 +63,7 @@ SCRIPTPATH=$0
 SCRIPTARGV=( "$@" )
 PKGDIR=${HOME}/dpm
 HANDLERS=( git )
+LOCK=1
 CONFIGS=(
     ~/.dpmrc
     /usr/local/etc/dpmrc
@@ -72,6 +73,7 @@ CONFIGS=(
 
 
 function main() {
+    local OPTIND OPTERR OPTARG opt
     local action=( usage )
     local lock=0
     local isok=1
@@ -87,18 +89,26 @@ function main() {
     ensure-deps || exit 1
 
     # Check arguments
+    while getopts "n" opt; do
+        case "$opt" in
+            n)  LOCK=0 ;;
+        esac
+    done
+    shift $((OPTIND-1))
+
+    # Check command
     case "${1-}" in
-        install)      shift && action=( dpm-install -dr  ) && lock=1 ;;
-        mv)           shift && action=( dpm-rename       ) && lock=1 ;;
-        remove)       shift && action=( dpm-remove -dr   ) && lock=1 ;;
-        update)       shift && action=( dpm-update       ) && lock=1 ;;
-        recover)      shift && action=( dpm-recover      ) && lock=1 ;;
-        cleanup)      shift && action=( dpm-cleanup      ) && lock=1 ;;
-        list)         shift && action=( dpm-list         ) && lock=1 ;;
-        setup)        shift && action=( dpm-setup        ) && lock=1 ;;
-        active)       shift && action=( dpm-active       ) && lock=1 ;;
-        activate)     shift && action=( dpm-activate     ) && lock=1 ;;
-        deactivate)   shift && action=( dpm-deactivate   ) && lock=1 ;;
+        install)      shift && action=( dpm-install -dr  ) && lock=$LOCK ;;
+        mv)           shift && action=( dpm-rename       ) && lock=$LOCK ;;
+        remove)       shift && action=( dpm-remove -dr   ) && lock=$LOCK ;;
+        update)       shift && action=( dpm-update       ) && lock=$LOCK ;;
+        recover)      shift && action=( dpm-recover      ) && lock=$LOCK ;;
+        cleanup)      shift && action=( dpm-cleanup      ) && lock=$LOCK ;;
+        list)         shift && action=( dpm-list         ) && lock=$LOCK ;;
+        setup)        shift && action=( dpm-setup        ) && lock=$LOCK ;;
+        active)       shift && action=( dpm-active       ) && lock=$LOCK ;;
+        activate)     shift && action=( dpm-activate     ) && lock=$LOCK ;;
+        deactivate)   shift && action=( dpm-deactivate   ) && lock=$LOCK ;;
         help)         shift && action=( usage            ) ;;
         *)            logger FAIL "${1-(none)}: Invalid COMMAND"
                       isok=0
