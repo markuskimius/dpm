@@ -75,7 +75,6 @@ CONFIGS=(
 function main() {
     local OPTIND OPTERR OPTARG opt
     local action=( usage )
-    local lock=0
     local isok=1
 
     #
@@ -98,18 +97,18 @@ function main() {
 
     # Check command
     case "${1-}" in
-        install)      shift && action=( dpm-install -dr  ) && lock=$LOCK ;;
-        mv)           shift && action=( dpm-rename       ) && lock=$LOCK ;;
-        remove)       shift && action=( dpm-remove -dr   ) && lock=$LOCK ;;
-        update)       shift && action=( dpm-update       ) && lock=$LOCK ;;
-        recover)      shift && action=( dpm-recover      ) && lock=$LOCK ;;
-        cleanup)      shift && action=( dpm-cleanup      ) && lock=$LOCK ;;
-        list)         shift && action=( dpm-list         ) && lock=$LOCK ;;
-        setup)        shift && action=( dpm-setup        ) && lock=$LOCK ;;
-        active)       shift && action=( dpm-active       ) && lock=$LOCK ;;
-        activate)     shift && action=( dpm-activate     ) && lock=$LOCK ;;
-        deactivate)   shift && action=( dpm-deactivate   ) && lock=$LOCK ;;
-        help)         shift && action=( usage            ) ;;
+        install)      shift && action=( dpm-install -dr  ) ;;
+        mv)           shift && action=( dpm-rename       ) ;;
+        remove)       shift && action=( dpm-remove -dr   ) ;;
+        update)       shift && action=( dpm-update       ) ;;
+        recover)      shift && action=( dpm-recover      ) ;;
+        cleanup)      shift && action=( dpm-cleanup      ) ;;
+        list)         shift && action=( dpm-list         ) ;;
+        setup)        shift && action=( dpm-setup        ) ;;
+        active)       shift && action=( dpm-active       ) ;;
+        activate)     shift && action=( dpm-activate     ) ;;
+        deactivate)   shift && action=( dpm-deactivate   ) ;;
+        help)         usage && exit                        ;;
         *)            logger FAIL "${1-(none)}: Invalid COMMAND"
                       isok=0
                       ;;
@@ -122,7 +121,7 @@ function main() {
     fi
 
     # Lock
-    if (( lock )); then
+    if (( LOCK )); then
         lock-pkgdir || exit 1
     fi
 
@@ -307,11 +306,11 @@ function dpm-install() {
 
         if [[ "$url" == "$installed_url" && ( -z "${branch-}" || "${branch-}" == "$installed_branch" ) ]]; then
             logger INFO "${pkgname}: Already installed."
-            REFHEIGHT=$(instfile-height "$pkgname")
         else
-            logger FAIL "${pkgname}: Already installed but from ${installed_url} branch ${installed_branch}, cannot proceed."
-            false
+            logger WARN "${pkgname}: Already installed but from ${installed_url} branch ${installed_branch}"
         fi
+
+        REFHEIGHT=$(instfile-height "$pkgname")
     else
         "${handler}-install" "$url" "$pkgname" "${branch-}" 2>&1 | logger "${handler}"
         REFHEIGHT=0
