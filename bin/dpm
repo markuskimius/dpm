@@ -19,9 +19,10 @@ COMMAND:
                         If PKGNAME is omitted a name is chosen based on the
                         URL.
 
-  mv PKGNAME1 PKGNAME2  Rename PKGNAME1 to PKGNAME2 if possible.
-
   remove PKGNAME        Remove PKGNAME and any of its unused dependencies.
+
+  rename PKGNAME1 PKGNAME2
+                        Rename PKGNAME1 to PKGNAME2 if possible.
 
   update [PKGNAME]      Update PKGNAME, installing any new dependency.  Any
                         stale dependency is not removed.  Use '${SCRIPTNAME}
@@ -77,6 +78,39 @@ function main() {
     local action=( usage )
     local isok=1
 
+    # Check arguments
+    while getopts "p:n" opt; do
+        case "$opt" in
+            p)  PKGDIR=$OPTARG ;;
+            n)  LOCK=0         ;;
+            *)  isok=0         ;;
+        esac
+    done
+    shift $((OPTIND-1))
+
+    # Check command
+    case "${1-}" in
+        install)    shift && action=( dpm-install      ) ;;
+        remove)     shift && action=( dpm-remove       ) ;;
+        rename)     shift && action=( dpm-rename       ) ;;
+        update)     shift && action=( dpm-update       ) ;;
+        recover)    shift && action=( dpm-recover      ) ;;
+        cleanup)    shift && action=( dpm-cleanup      ) ;;
+        list)       shift && action=( dpm-list         ) ;;
+        setup)      shift && action=( dpm-setup        ) ;;
+        activate)   shift && action=( dpm-activate     ) ;;
+        deactivate) shift && action=( dpm-deactivate   ) ;;
+        help)       usage && exit                        ;;
+        *)          logger FAIL "${1-(none)}: Invalid COMMAND"
+                    isok=0
+    esac
+
+    # Validate arguments
+    if (( ! isok )); then
+        usage 1>&2
+        exit 1
+    fi
+
     #
     # Initialize.  Note that lock-pkgdir may restart the script so any code
     # that runs before it must be idempotent.
@@ -84,46 +118,12 @@ function main() {
     # load-config and ensure-deps must run before lock-pkgdir because
     # lock-pkgdir depends on them.
     #
-    load-config || exit 1
-    ensure-deps || exit 1
-
-    # Check arguments
-    while getopts "n" opt; do
-        case "$opt" in
-            n)  LOCK=0 ;;
-        esac
-    done
-    shift $((OPTIND-1))
-
-    # Check command
-    case "${1-}" in
-        install)      shift && action=( dpm-install -dr  ) ;;
-        mv)           shift && action=( dpm-rename       ) ;;
-        remove)       shift && action=( dpm-remove -dr   ) ;;
-        update)       shift && action=( dpm-update       ) ;;
-        recover)      shift && action=( dpm-recover      ) ;;
-        cleanup)      shift && action=( dpm-cleanup      ) ;;
-        list)         shift && action=( dpm-list         ) ;;
-        setup)        shift && action=( dpm-setup        ) ;;
-        active)       shift && action=( dpm-active       ) ;;
-        activate)     shift && action=( dpm-activate     ) ;;
-        deactivate)   shift && action=( dpm-deactivate   ) ;;
-        help)         usage && exit                        ;;
-        *)            logger FAIL "${1-(none)}: Invalid COMMAND"
-                      isok=0
-                      ;;
-    esac
-
-    # Sanity check
-    if (( ! isok )); then
-        usage 1>&2
-        exit 1
-    fi
-
-    # Lock
+    load-config          || exit 1
+    ensure-deps          || exit 1
     if (( LOCK )); then
-        lock-pkgdir || exit 1
-    fi
+        lock-pkgdir
+    fi                   || exit 1
+    instfile-open        || exit 1
 
     "${action[@]}" "$@"
 }
@@ -136,12 +136,10 @@ function load-config() {
     # Defaults
     set -o pipefail
 
-    # Reset globals
+    # Initialize
     LOGGER_INDENT=0
-    INSTALLED=""
-    instfile-memoize
 
-    # Source the first file found in CONFIG[], if any
+    # Source the first file found in CONFIGS[], if any
     for file in "${CONFIGS[@]}"; do
         if [[ -e "$file" ]]; then
             source "$file" || isok=0
@@ -157,15 +155,9 @@ function ensure-deps() {
     local handler
     local isok=1
 
-    # Check for awk
-    if ! command -v awk >/dev/null; then
-        logger FAIL "Please install awk."
-        isok=0
-    fi
-
     # Check for flock or shlock
-    if ! command -v flock >/dev/null && ! command -v shlock >/dev/null; then
-        logger FAIL "Please install flock or shlock."
+    if (( LOCK )) && ! command -v flock >/dev/null && ! command -v shlock >/dev/null; then
+        logger FAIL "flock or shlock must be installed."
         isok=0
     fi
 
@@ -180,6 +172,12 @@ function ensure-deps() {
 
         "$depfn" || isok=0
     done
+
+    # Ensure $PKGDIR is set
+    if [[ ! -n "$PKGDIR" ]]; then
+        logger FAIL "\$PKGDIR must be set"
+        isok=0
+    fi
 
     # Ensure $PKGDIR exists
     if [[ ! -d "$PKGDIR" ]] && ! mkdir -p "$PKGDIR" 2>/dev/null; then
@@ -233,26 +231,21 @@ function lock-pkgdir() {
 
 
 ##############################################################################
-# ACTIONS
+# INSTALL
 
 function dpm-install() {
-    local optstring url pkgname handler
-    local direct=0 safemode=0 recursive=0 trackback="" branch=""
-    local unwind=0
+    local optstring url pkgname branch
+    local isok=1
 
     # Parse arguments
-    optstring=$(egetopt "dsrt:b:" "direct,safemode,recursive,trackback:,branch:" "$@") || return 1
+    optstring=$(egetopt "b:" "branch:" "$@") || return 1
     eval set -- "$optstring"
 
     while (( $# )); do
         [[ "$1" == "--" ]] && shift && break
 
         case "$1" in
-            -d|--direct)    direct=1              ;;
-            -s|--safemode)  safemode=1            ;;
-            -r|--recursive) recursive=1           ;;
-            -t|--trackback) trackback=$2 && shift ;;
-            -b|--branch)    branch=$2 && shift    ;;
+            -b|--branch)  branch=$2 && shift ;;
         esac
 
         shift
@@ -261,659 +254,825 @@ function dpm-install() {
     # Optionless arguments
     url=$1
     pkgname=${2-}
-    handler=$(url-gethandler "$url")
 
-    if [[ -z "$pkgname" && -n "$handler" && -n "$url" ]]; then
-        pkgname=$("${handler}-urlpkg" "$url")
-    fi
-
-    # Allow an already-installed package be marked as direct-installed by pkgname
-    if [[ -z "$pkgname" ]] && pkg-isinstalled "$url" && (( direct )); then
+    # The first argument may be a URL or a packagename
+    if [[ -z "$pkgname" ]] && pkg-isinstalled "$url"; then
         pkgname=$url
-        url=$(pkg-geturl "$pkgname")
-        branch=$(pkg-getbranch "$pkgname")
-        handler=$(url-gethandler "$url")
+        url=""
     fi
 
-    if [[ -z "$branch" ]]; then
-        unset branch
+    # Validate arguments
+    [[ -z "$url" && -z "$pkgname" ]] && logger FAIL "Must specify URL or PKGNAME" && return 1
+    (( $# > 2 )) && logger FAIL "Too many arguments" && return 1
+
+    # Default the package name if not set
+    if [[ -z "$pkgname" ]]; then
+        pkgname=$(url-pkgname "$url") || return 1
     fi
 
-    # Sanity check
-    [[ -z "$url"     ]] && logger FAIL "Must specify URL." && return 1
-    [[ -z "$pkgname" ]] && logger FAIL "Cannot deduce PKGNAME from URL '$url'" && return 1
-    [[ -z "$handler" ]] && logger FAIL "${url}: Cannot identify handler for URL." && return 1
-
-    # Notification
-    logger INFO "INSTALL '${pkgname}' from ${url}${branch+ branch }${branch-} to ${PKGDIR}/${pkgname} ..."
-
-    # Don't allow a package to be direct-installed more than once
-    if pkg-isinstalled "$pkgname" && (( direct )) && [[ "$(instfile-flags "$pkgname")" == *D* ]]; then
-        logger INFO "${pkgname}: Already direct-installed."
+    # Package cannot be direct installed more than once
+    if instfile-seek "$pkgname" && [[ "$(instfile-get FLAGS)" == *D* ]]; then
+        logger FAIL "${pkgname}: Already direct installed"
         return 0
     fi
 
-    # Don't allow circular dependency
-    if [[ "|${trackback}|" == *"|${pkgname}|"* ]]; then
-        logger FAIL "${pkgname}: FAILED to install, circular dependency."
-        return 1
-    fi
+    # Install or increment reference counter
+    install-or-incref -r "$pkgname" "$url" "$branch" || isok=0
 
-    # Install the package
-    if pkg-isinstalled "$pkgname"; then
-        local installed_url=$(pkg-geturl "$pkgname")
-        local installed_branch=$(pkg-getbranch "$pkgname")
-
-        if [[ "$url" == "$installed_url" && ( -z "${branch-}" || "${branch-}" == "$installed_branch" ) ]]; then
-            logger INFO "${pkgname}: Already installed."
-        else
-            logger WARN "${pkgname}: Already installed but from ${installed_url} branch ${installed_branch}"
-        fi
-
-        REFHEIGHT=$(instfile-height "$pkgname")
-    else
-        "${handler}-install" "$url" "$pkgname" "${branch-}" 2>&1 | logger "${handler}"
-        REFHEIGHT=0
-    fi || unwind=10
-
-    # Install the dependencies
-    if (( ! unwind && recursive )); then
-        local flags=( -t "${trackback}|${pkgname}" )
-
-        if (( safemode )); then
-            flags+=( -s )
-        fi
-
-        dpm-install-deps "${flags[@]}" "$pkgname"
-        (( REFHEIGHT += 1 ))
-    fi || unwind=20
-
-    # Add the installation record
-    if (( ! unwind )); then
-        local flags=( -H "$REFHEIGHT" )
-
-        if (( direct )); then
-            flags+=( -fD )
-        fi
-
-        logger INFO "${pkgname}: Update installation record..."
-        instfile-incr "${flags[@]}" "$pkgname"
-    fi || unwind=30
-
-    # Success!
-    if (( ! unwind )); then
-        logger GOOD "${pkgname}: INSTALL SUCCESS!"
-        return 0
-    fi
-
-    # Notification
-    logger FAIL "${pkgname}: FAILED to install."
-
-    # Unwind the recording of how the package was installed
-    if (( unwind > 20 )); then
-        logger INFO "${pkgname}: Rollback dependencies..."
-        dpm-remove-deps "$pkgname"
-    fi
-
-    # Unwind the installation
-    if (( unwind >= 10 )) && (( $(instfile-numref "$pkgname") <= 0 )) && (( ! safemode )); then
-        #
-        # Unlike above unwinding routines, this code is executed even if the
-        # handler-install fails because handler-install may be a user-supplied
-        # function that does not fully cleans up after itself.
-        #
-        logger INFO "${pkgname}: Rollback installed files..."
-        [[ -n "$PKGDIR" && -n "$pkgname" ]] && "${handler}-remove" "$pkgname" 2>&1 | logger "${handler}"
-    fi
-
-    return 1
-}
-
-
-function dpm-install-deps() {
-    local optstring pkgname
-    local safemode=0 trackback=""
-    local depname depurl depbranch deprest
-    local installed=()
-    local unwind=0
-    local count=0
-
-    # Parse arguments
-    optstring=$(egetopt "st:" "safemode,trackback:" "$@") || return 1
-    eval set -- "$optstring"
-
-    while (( $# )); do
-        [[ "$1" == "--" ]] && shift && break
-
-        case "$1" in
-            -s|--safemode)  safemode=1            ;;
-            -t|--trackback) trackback=$2 && shift ;;
-        esac
-
-        shift
-    done
-
-    # Install the dependencies
-    for pkgname in "$@"; do
-        local flags=( -rt "${trackback}" )
-        local height=0
-
-        if (( safemode )); then
-            flags+=( -s )
-        fi
-
-        while IFS=\| read -r depname depurl depbranch deprest; do
-            [[ -z "$depbranch" ]] && unset depbranch
-            logger INFO "${pkgname}: Requires '${depname}' from ${depurl}${depbranch+ branch }${depbranch-}:"
-
-            logger-push
-            dpm-install "${flags[@]}" -b "${depbranch-}" "$depurl" "$depname" \
-            && installed=( "$depname" ) \
-            && height=$(( REFHEIGHT > height ? REFHEIGHT : height )) \
-            || unwind=10
-            logger-pop
-
-            # Stop on error
-            (( unwind )) && break
-            (( count += 1 ))
-        done < <(pkg-getdeps "$pkgname")
-
-        REFHEIGHT=$height
-    done
-
-    # Success!
-    if (( ! unwind )); then
-        return 0
-    fi
-
-    # Unwind the installed packages
-    if (( unwind > 0 && count )); then
-        local flags=( -r )
-
-        if (( safemode )); then
-            flags+=( -s )
-        fi
-
-        # Notification
-        logger FAIL "${pkgname}: FAILED to install a dependency, remove already installed dependencies..."
-
-        logger-push
-        for depname in "${installed[@]}"; do
-            dpm-remove "${flags[@]}" "$depname"
-        done
-        logger-pop
-    fi
-
-    return 1
-}
-
-
-function dpm-rename() {
-    local pkgname1=$1
-    local pkgname2=$2
-    local flags height
-    local unwind=0
-
-    # Sanity check
-    [[ -z "$pkgname1" || -z "$pkgname2" ]] && logger FAIL "Must specify PKGNAME1 and PKGNAME2." && return 1
-
-    # Notification
-    logger INFO "RENAME '${pkgname1}' to '${pkgname2}'..."
-
-    # PKGNAME1 must exist
-    if ! pkg-isinstalled "$pkgname1"; then
-        logger ERROR "${pkgname1}: No such package."
-        return 1
-    fi
-
-    # Get the flags for PKGNAME1
-    flags=$(instfile-flags "$pkgname1")
-    height=$(instfile-height "$pkgname1")
-
-    # PKGNAME1 must be direct installed and must have no other dependency
-    if [[ "$flags" != *D* ]] || (( $(instfile-numref "$pkgname1") != 1 )); then
-        logger ERROR "${pkgname1}: Cannot be renamed, has dependencies."
-        return 1
-    fi
-
-    # PKGNAME2 must not exist
-    if pkg-isinstalled "$pkgname2"; then
-        logger ERROR "${pkgname2}: Already exists."
-        return 1
-    fi
-
-    # Rename
-    if (( ! unwind )); then
-        logger INFO "${pkgname1}: Rename package directory..."
-        mv "${PKGDIR}/${pkgname1}" "${PKGDIR}/${pkgname2}"
-    fi || unwind=10
-
-    # Update the installation record
-    if (( ! unwind )); then
-        logger INFO "${pkgname2}: Increment installation record..."
-
-        instfile-incr -f "$flags" -H "$height" "$pkgname2"
-    fi || unwind=20
-
-    if (( ! unwind )); then
-        logger INFO "${pkgname1}: Decrement installation record..."
-
-        instfile-decr -f "$flags" "$pkgname1"
-    fi || unwind=30
-
-    # Success!
-    if (( ! unwind )); then
-        logger GOOD "${pkgname2}: RENAME SUCCESS!"
-        return 0
-    fi
-
-    # Notification
-    logger FAIL "${pkgname1}: FAILED to rename."
-
-    # Unwind the incrementing of the installation record
-    if (( unwind > 20 )); then
-        logger INFO "${pkgname2}: Rollback installation record..."
-        instfile-decr -f "$flags" "$pkgname2"
-    fi
-
-    # Unwind the renaming of the directory
-    if (( unwind > 10 )); then
-        logger INFO "${pkgname2}: Rollback renaming of the package directory..."
-        mv "${PKGDIR}/${pkgname2}" "${PKGDIR}/${pkgname1}"
-    fi
-
-    return 1
-}
-
-
-function dpm-remove() {
-    local optstring pkgname
-    local direct=0 safemode=0 recursive=0 trackback=""
-    local isok=1
-
-    # Parse arguments
-    optstring=$(egetopt "dsrt:" "direct,safemode,recursive,trackback:" "$@") || return 1
-    eval set -- "$optstring"
-
-    while (( $# )); do
-        [[ "$1" == "--" ]] && shift && break
-
-        case "$1" in
-            -d|--direct)    direct=1              ;;
-            -s|--safemode)  safemode=1            ;;
-            -r|--recursive) recursive=1           ;;
-            -t|--trackback) trackback=$2 && shift ;;
-        esac
-
-        shift
-    done
-
-    # Sanity check
-    (( ! $# )) && logger FAIL "Must specify at least one PKGNAME" && return 1
-
-    # Remove the package(s)
-    for pkgname in "$@"; do
-        local removeok=1
-
-        # Notification
-        logger INFO "REMOVE '${pkgname}'..."
-
-        # Sanity check
-        if ! pkg-isinstalled "$pkgname"; then
-            logger WARN "${pkgname}: No such package, nothing to remove."
-            continue
-        fi
-
-        # Don't allow a package to be direct-removed if it wasn't direct-installed
-        if (( direct )) && [[ "$(instfile-flags "$pkgname")" != *D* ]]; then
-            logger FAIL "${pkgname}: Not direct-installed, cannot be direct-removed."
-            isok=0
-            continue
-        fi
-
-        # Don't allow a direct-installed package to be removed by a dependency-removal
-        if (( ! direct )) && (( $(instfile-numref "$pkgname") == 1 )) && [[ "$(instfile-flags "$pkgname")" == *D* ]]; then
-            logger FAIL "${pkgname}: Not installed as a dependency, cannot be direct-removed."
-            isok=0
-            continue
-        fi
-
-        # Don't allow circular dependency
-        if [[ "|${trackback}|" == *"|${pkgname}|"* ]]; then
-            logger FAIL "${pkgname}: FAILED to remove, circular dependency."
-            isok=0
-            continue
-        fi
-
-        # Remove the dependencies
-        if (( recursive )); then
-            local flags=( -t "${trackback}|${pkgname}" )
-
-            if (( safemode )); then
-                flags+=( -s )
-            fi
-
-            dpm-remove-deps "${flags[@]}" "$pkgname" \
-            || removeok=0
-
-            (( ! removeok )) && isok=0 && continue
-        fi
-
-        # Remove the installation record
-        if true; then
-            local flags=()
-
-            if (( direct )); then
-                flags+=( -fD )
-            fi
-
-            logger INFO "${pkgname}: Remove installation record..."
-            instfile-decr "${flags[@]}" "$pkgname" \
-            || removeok=0
-
-            (( ! removeok )) && isok=0 && continue
-        fi
-
-        # Uninstall the package if needed
-        if (( $(instfile-numref "$pkgname") <= 0 )) && (( ! safemode )); then
-            local url=$(pkg-geturl "$pkgname")
-            local branch=$(pkg-getbranch "$pkgname")
-            local handler=$(pkg-gethandler "$pkgname")
-
-            logger INFO "${pkgname}: Remove files installed from ${url} branch ${branch} ..."
-
-            if [[ -n "$handler" ]]; then
-                [[ -n "$PKGDIR" && -n "$pkgname" ]] && "${handler}-remove" "$pkgname" 2>&1 | logger "${handler}"
-            else
-                logger FAIL "${pkgname}: Cannot identify handler."
-                false
-            fi || removeok=0
-
-            (( ! removeok )) && isok=0 && continue
-        fi
-    done
-
-    # Success!
     if (( isok )); then
-        logger GOOD "${pkgname}: REMOVE SUCCESS!"
-        return 0
-    fi
+        # Update the flag
+        logger INFO "${pkgname}: Set direct install flag..."
+        instfile-seek "$pkgname"
+        instfile-setflags D
+        instfile-save || isok=0
 
-    # Notification
-    logger FAIL "${pkgname}: FAILED to remove completely, some record or files may remain."
+        if (( isok )); then
+            # Success!
+            logger OK "Done"
+            return 0
+        fi
+
+        # Failed!
+        logger FAIL "${pkgname}: Failed to set direct install flag, revert..."
+        decref-by-pkgname -r "$pkgname"
+    fi
 
     return 1
 }
 
 
-function dpm-remove-deps() {
-    local optstring pkgname
-    local safemode=0 trackback=""
-    local depname depurl depbranch deprest
-    local isok=1
+function install-or-incref() {
+    local OPTIND OPTERR OPTARG opt
+    local pkgname url branch sources
+    local recursive=()
+    local numrefs=1
 
-    # Parse arguments
-    optstring=$(egetopt "st:" "safemode,trackback:" "$@") || return 1
-    eval set -- "$optstring"
-
-    while (( $# )); do
-        [[ "$1" == "--" ]] && shift && break
-
-        case "$1" in
-            -s|--safemode)  safemode=1            ;;
-            -t|--trackback) trackback=$2 && shift ;;
+    # Check arguments
+    while getopts "n:r" opt; do
+        case "$opt" in
+            n)  numrefs=$OPTARG   ;;
+            r)  recursive+=( -r ) ;;
         esac
-
-        shift
     done
+    shift $((OPTIND-1))
 
-    # Remove the dependencies
-    for pkgname in "$@"; do
-        local flags=( -rt "${trackback}" )
+    # Optionless arguments
+    pkgname=$1
+    url=${2-}
+    branch=${3-}
+    sources=${4-"$url $branch"}
 
-        if (( safemode )); then
-            flags+=( -s )
+    # Install or update reference recursively
+    if pkg-isinstalled "$pkgname"; then
+        local insturl instbranch
+
+        #
+        # If the dependency is already installed from a compatible source
+        # we just need to update the reference counters.  If it's installed
+        # from an incompatible source then we fail.
+        #
+
+        pkginfo-seek "$pkgname"
+        insturl=$(pkginfo-get URL)
+        instbranch=$(pkginfo-get BRANCH)
+
+        if [[ " $sources " == *" $insturl $instbranch "* \
+           || " $sources " == *" $insturl * "*           \
+           || " $sources " == *" $insturl  "             \
+           || " $sources " == *" $insturl "              \
+           || " $sources " ==  "   "                     \
+           ]]; then
+            incref-by-pkgname -n "$numrefs" "${recursive[@]}" "$pkgname"
+        else
+            logger FAIL "${pkgname}: Already installed but from an incompatible source ${insturl} branch ${instbranch}"
+            false
         fi
-
-        while IFS=\| read -r depname depurl depbranch deprest; do
-            logger INFO "${pkgname}: Depends on ${depname}:"
-
-            logger-push
-            dpm-remove "${flags[@]}" "$depname" \
-            || isok=0
-            logger-pop
-        done < <(pkg-getdeps "$pkgname")
-    done
+    else
+        install-by-url -n "$numrefs" "${recursive[@]}" "$pkgname" "$url" "$branch"
+    fi || isok=0
 
     (( isok ))
 }
 
+
+function install-by-url() {
+    local OPTIND OPTERR OPTARG opt
+    local pkgname url branch
+    local recursive=0
+    local numrefs=1
+    local handler
+    local isok=1
+
+    # Check arguments
+    while getopts "n:r" opt; do
+        case "$opt" in
+            n)  numrefs=$OPTARG ;;
+            r)  recursive=1     ;;
+        esac
+    done
+    shift $((OPTIND-1))
+
+    # Optionless arguments
+    pkgname=$1
+    url=$2
+    branch=${3-}
+
+    # Sanity check
+    handler=$(url-gethandler "$url") || return 1
+    ! command -v "${handler}-install" >&/dev/null && logger FAIL "${handler}-install missing" && return 1
+
+    # Notification
+    [[ -z "$branch" ]] && unset branch
+    logger INFO "INSTALL ${pkgname} from ${url}${branch+ branch }${branch-}..."
+
+    # Install the package
+    "${handler}-install" "$url" "$pkgname" "${branch-}" 2>&1 | logger "${handler}" || isok=0
+
+    if (( isok )); then
+        # Insert a installation record
+        logger INFO "${pkgname}: Insert a installation record..."
+        instfile-rmrec "$pkgname"
+        instfile-seek "$pkgname"
+        instfile-set PKGNAME "$pkgname"
+        instfile-set NUMREF "$numrefs"
+        instfile-set HEIGHT 1
+        instfile-save || isok=0
+
+        if (( isok )); then
+            # Install dependencies
+            if (( recursive )); then
+                install-deps-by-pkgname -n "$numrefs" "$pkgname"
+            fi || isok=0
+
+            if (( isok )); then
+                # Success!
+                logger OK "SUCCESS: Installed ${pkgname}"
+                return 0
+            fi
+
+            # Revert the inserted installation record
+            logger INFO "${pkgname}: Revert the inserted installation record..."
+            instfile-rmrec "$pkgname"
+            instfile-save
+        fi
+
+        # Revert the installed package
+        logger INFO "${pkgname}: Revert the installed package..."
+        "${handler}-remove" "$pkgname" 2>&1 | logger "${handler}"
+    fi
+
+    # Failed!
+    logger FAIL "FAILED to install ${pkgname}"
+    return 1
+}
+
+
+function install-deps-by-pkgname() {
+    local OPTIND OPTERR OPTARG opt
+    local pkgname
+    local installed=()
+    local maxheight=0
+    local numrefs=1
+    local depname
+    local isok=1
+
+    # Check arguments
+    while getopts "n:" opt; do
+        case "$opt" in
+            n)  numrefs=$OPTARG ;;
+        esac
+    done
+    shift $((OPTIND-1))
+
+    # Optionless arguments
+    pkgname=$1
+
+    # Open the dependency file
+    depfile-open "$pkgname"
+
+    # Install each dependency
+    for depname in $(depfile-pkgnames); do
+        local depurl depbranch depsources
+
+        # Notification
+        logger INFO "${pkgname}: Requires ${depname}..."
+        logger-push
+
+        # Get information about the dependency
+        depfile-open "$pkgname"
+        depfile-seek "$depname"
+        depurl=$(depfile-geturl)           # Default URL
+        depbranch=$(depfile-getbranch)     # Default branch
+        depsources=$(depfile-get SOURCES)  # All sources
+
+        # Install or increment reference counter recursively
+        install-or-incref -n "$numrefs" -r "$depname" "$depurl" "$depbranch" "$depsources" \
+        && installed+=( "$depname" )                                                       \
+        || isok=0
+
+        if (( isok )); then
+            # Update maxheight
+            instfile-seek "$depname"
+            maxheight=$(max "$maxheight" "$(instfile-get HEIGHT)")
+
+            # Success!
+            logger-pop
+            continue
+        fi
+
+        # Failed!
+        logger-pop
+        break
+    done
+
+    if (( isok )); then
+        # Update the height
+        if (( ${#installed[@]} )); then
+            logger INFO "${pkgname}: Update the installion record..."
+            instfile-seek "$pkgname"
+            instfile-set HEIGHT $((maxheight + 1))
+            instfile-save
+        fi || isok=0
+
+        if (( isok )); then
+            # Success!
+            return 0
+        fi
+
+        # ;&
+    fi
+
+    # Failed!
+    logger FAIL "${pkgname}: Failed to install dependencies, revert..."
+    logger-push
+
+    # Revert updates and installs
+    for depname in "${installed[@]}"; do
+        #
+        # The package may have been installed or its reference incremented.
+        # Either way, we revert nondestructively by decrementing the reference
+        # without removing the package.
+        #
+
+        decref-by-pkgname -n "$numrefs" -r "$depname"
+    done
+
+    logger-pop
+    return 1
+}
+
+
+##############################################################################
+# REMOVE
+
+function dpm-remove() {
+    local pkgname
+    local isok=1
+
+    # Validate arguments
+    (( $# == 0 )) && logger FAIL "Must specify PKGNAME" && return 1
+
+    # Remove the packages
+    for pkgname in "$@"; do
+        local flags numref
+
+        # Validate package
+        ! pkg-isinstalled "$pkgname" && logger WARN "${pkgname}: No such package, skip" && continue
+
+        # Get some information about the package
+        instfile-seek "$pkgname"
+        flags=$(instfile-get FLAGS)
+        numref=$(instfile-get NUMREF)
+
+        # Must be direct installed
+        [[ "$flags" != *D* ]] && logger FAIL "${pkgname}: Must be direct installed to remove" && isok=0 && break
+
+        # Remove or decrement
+        if (( numref <= 1 )); then
+            remove-by-pkgname -r "$pkgname"
+        else
+            decref-by-pkgname -r "$pkgname" || isok=0
+
+            if (( isok )); then
+                # Update the flag
+                logger INFO "${pkgname}: Clear direct install flag..."
+                instfile-seek "$pkgname"
+                instfile-clearflags D
+                instfile-save
+            fi || isok=0
+
+            (( isok ))
+        fi || isok=0
+
+        if (( isok )); then
+            # Success
+            continue
+        fi
+
+        # Failed
+        break
+    done
+
+    if (( isok )); then
+        # Success!
+        logger OK "Done"
+    fi
+
+    # Failed!
+    (( isok ))
+}
+
+
+function remove-by-pkgname() {
+    local OPTIND OPTERR OPTARG opt
+    local pkgname
+    local recursive=0
+    local handler
+    local isok=1
+
+    # Check arguments
+    while getopts "r" opt; do
+        case "$opt" in
+            r)  recursive=1 ;;
+        esac
+    done
+    shift $((OPTIND-1))
+
+    # Optionless arguments
+    pkgname=$1
+
+    # Sanity check
+    ! pkg-isinstalled "$pkgname" && logger WARN "${pkgname}: Already removed" && return 0
+    handler=$(pkg-gethandler "$pkgname") || return 1
+    ! command -v "${handler}-remove" >&/dev/null && logger FAIL "${handler}-remove missing" && return 1
+
+    # Remove the dependencies first
+    logger INFO "REMOVE ${pkgname}..."
+    if (( recursive )); then
+        remove-deps-by-pkgname "$pkgname" || isok=0
+    fi
+
+    if (( isok )); then
+        # Remove the package
+        "${handler}-remove" "$pkgname" 2>&1 | logger "${handler}" || isok=0
+
+        if (( isok )); then
+            # Remove the installation record
+            logger INFO "${pkgname}: Remove the installation record..."
+            instfile-rmrec "$pkgname"
+            instfile-save || isok=0
+
+            if (( isok )); then
+                # Success!
+                logger OK "SUCCESS: Removed ${pkgname}"
+                return 0
+            fi
+
+            # ;&
+        fi
+
+        # ;&
+    fi
+
+    # Failed!
+    logger FAIL "FAILED to remove ${pkgname}"
+    return 1
+}
+
+
+function remove-deps-by-pkgname() {
+    local pkgname=$1
+    local depname
+    local isok=1
+
+    # Open the dependency file.  If can't, the package has no dependencies.
+    depfile-open "$pkgname"
+
+    # Remove each dependency
+    for depname in $(depfile-pkgnames); do
+        local numref
+
+        # Notification
+        logger INFO "${pkgname}: References ${depname}..."
+        logger-push
+
+        # Get information about the dependency
+        instfile-seek "$depname"
+        numref=$(instfile-get NUMREF)
+
+        # Remove the package or decrement the reference counter?
+        if (( numref <= 1 )); then
+            remove-by-pkgname -r "$depname"
+        else
+            decref-by-pkgname -r "$depname"
+        fi || isok=0
+
+        if (( isok )); then
+            # Success
+            logger-pop
+            continue
+        fi
+
+        # Failed
+        logger-pop
+        break
+    done
+
+    # Success!
+    if (( isok )); then
+        return 0
+    fi
+
+    # Failed!
+    return 1
+}
+
+
+##############################################################################
+# RENAME
+
+function dpm-rename() {
+    local pkgname1=$1
+    local pkgname2=$2
+    local isok=1
+
+    # Validate arguments
+    [[ -z "$pkgname1" ]] && logger FAIL "Must specify PKGNAME1" && return 1
+    [[ -z "$pkgname2" ]] && logger FAIL "Must specify PKGNAME2" && return 1
+    (( $# > 2         )) && logger FAIL "Too many arguments"   && return 1
+    ! pkg-isinstalled "$pkgname1" && logger FAIL "${pkgname1}: PKGNAME1 invalid, must exist" && return 1
+    pkg-isinstalled "$pkgname2"   && logger FAIL "${pkgname2}: PKGNAME2 invalid, already exists" && return 1
+
+    # Get some information about the package
+    pkginfo-seek "$pkgname1"
+
+    # The package must be direct installed with no dependencies
+    if [[ "$(pkginfo-get FLAGS)" != *D* ]] || (( $(pkginfo-get NUMREF) != 1 )); then
+        logger FAIL "${pkgname1}: Must be direct installed with no more than one reference"
+        return 1
+    fi
+
+    # Notification
+    logger INFO "RENAME ${pkgname1} to ${pkgname2}..."
+
+    # Move the package
+    logger INFO "${pkgname1}: Move directory to ${pkgname2}..."
+    mv -f "${PKGDIR}/${pkgname1}" "${PKGDIR}/${pkgname2}" || isok=0
+
+    if (( isok )); then
+        # Update the installation record
+        logger INFO "${pkgname1}: Rename install record to ${pkgname2}..."
+        instfile-mvrec "$pkgname1" "$pkgname2"
+        instfile-save || isok=0
+
+        if (( isok )); then
+            # Success!
+            logger OK "SUCCESS: Renamed ${pkgname1} to ${pkgname2}"
+            return 0
+        fi
+
+        # Failed!
+        logger INFO "FAILED to rename, revert..."
+        mv -f "${PKGDIR}/${pkgname2}" "${PKGDIR}/${pkgname1}"
+    fi
+
+    # Failed!
+    return 1
+}
+
+
+##############################################################################
+# UPDATE
 
 function dpm-update() {
     local pkgname
     local isok=1
 
-    # Update all packages if no package specified
-    if (( ! $# )); then
-        local packages=()
-        local line
-
-        while IFS= read -r line; do
-            packages+=( "$line" )
-        done < <(installed-list)
-
-        set -- "${packages[@]}"
+    # Update all packages if none specified
+    if (( $# == 0 )); then
+        set -- $(installed)
     fi
 
-    # Sanity check
+    # Validate arguments
+    (( $# == 0 )) && logger FAIL "No package to update" && return 1
+
+    # Do my thing
     for pkgname in "$@"; do
-        if ! pkg-isinstalled "$pkgname"; then
-            logger FAIL "${pkgname}: No such package, nothing to update."
-            isok=0
-        fi
-    done
+        # Validate package
+        ! pkg-isinstalled "$pkgname" && logger FAIL "${pkgname}: Invalid PKGNAME" && isok=0 && break
 
-    # Update the packages
-    for pkgname in "$@"; do
-        local handler predeps=() postdeps=()
-        local updateok=1
-        local line
+        # Update the package
+        update-by-pkgname "$pkgname" || isok=0
 
-        # Skip packages that have been removed (or never existed and logged already)
-        pkg-isinstalled "$pkgname" || continue
-
-        # Notification
-        logger INFO "UPDATE '${pkgname}'..."
-
-        handler=$(pkg-gethandler "$pkgname")
-        if [[ -z "$handler" ]]; then
-            logger FAIL "${pkgname}: Cannot identify handler."
-            isok=0
+        if (( isok )); then
+            # Success!
             continue
         fi
 
-        # Get the list of dependencies before update
-        while IFS= read -r line; do
-            predeps+=( "$line" )
-        done < <(pkg-getdeps "$pkgname")
-
-        # Update the package
-        "${handler}-update" "$pkgname" 2>&1 | logger "${handler}" \
-        || updateok=0
-
-        # Get the list of dependencies after update
-        while IFS= read -r line; do
-            postdeps+=( "$line" )
-        done < <(pkg-getdeps "$pkgname")
-
-        # Install new dependencies
-        if (( updateok )); then
-            for line in "${postdeps[@]}"; do
-                if [[ " ${predeps[@]} " != *" $line "* ]]; then
-                    local depurl depname depbranch deprest
-                    IFS=\| read -r depname depurl depbranch deprest <<<"$line"
-
-                    logger INFO "${pkgname}: Now requires '${depname}' from ${depurl} branch ${depbranch}:"
-
-                    logger-push
-                    dpm-install -rt "$pkgname" -b "$depbranch" "$depurl" "$depname" \
-                    || updateok=0
-                    logger-pop
-                fi
-
-                (( ! updateok )) && break
-            done
-        fi
-
-        # Remove stale dependencies
-        if (( updateok )); then
-            for line in "${predeps[@]}"; do
-                if [[ " ${postdeps[@]} " != *" $line "* ]]; then
-                    local depurl depname depbranch deprest
-                    IFS=\| read -r depname depurl depbranch deprest <<<"$line"
-
-                    logger INFO "${pkgname}: No longer requires '${depname}':"
-
-                    logger-push
-                    dpm-remove -srt "$pkgname" "$depname" \
-                    || updateok=0
-                    logger-pop
-                fi
-            done
-        fi
-
-        if (( updateok )); then
-            logger GOOD "${pkgname}: UPDATE SUCCESS!"
-        else
-            logger FAIL "${pkgname}: FAILED to update."
-            isok=0
-        fi
+        # Failed!
+        logger FAIL "FAILED to update ${pkgname}"
+        break
     done
 
     (( isok ))
 }
 
 
-function dpm-recover() {
-    local instfile="${PKGDIR}/.installed"
-    local bkupfile="${instfile}.bkup"
-    local failfile="${instfile}.fail"
-    local dinstall=()
-    local active=()
-    local pkgname
-    local isok=1
+function update-by-pkgname() {
+    local pkgname=$1
+    local handler
+    local predeps=()
+    local postdeps=()
+    local numrefs maxheight
+
+    # Validate arguments
+    handler=$(pkg-gethandler "$pkgname") || return 1
+    ! command -v "${handler}-update" >&/dev/null && logger FAIL "${handler}-update missing" && return 1
 
     # Notification
-    logger INFO "RECOVER all packages..."
+    logger INFO "UPDATE '${pkgname}'..."
 
-    # Get the list of direct-installed and active packages
-    while IFS= read -r pkgname; do
-        [[ "$(instfile-flags "$pkgname")" == *D* ]] && dinstall+=( "$pkgname" ) || :
-        [[ "$(instfile-flags "$pkgname")" == *A* ]] && active+=( "$pkgname" ) || :
-    done < <(installed-list) || isok=0
-
-    # Backup the installation file
-    if (( isok )); then
-        # Notification
-        logger INFO "Backup the installation record..."
-
-        rm -f "$bkupfile" \
-        && mv "$instfile" "$bkupfile" \
-        && touch "$instfile" \
-        && INSTALLED="" \
-        || isok=0
+    # Get the list of dependencies before update
+    if depfile-open "$pkgname"; then
+        predeps=( $(depfile-pkgnames) )
     fi
 
-    # Re-install the direct-installed packages
-    if (( isok )); then
-        # Notification
-        logger INFO "Reinstall direct-installed packages..."
-        logger-push
+    # Get the number of references and height before the update
+    instfile-seek "$pkgname"
+    numrefs=$(instfile-get NUMREF)
+    maxheight=$(instfile-get HEIGHT)
 
-        for pkgname in "${dinstall[@]}"; do
-            dpm-install -dsr "$pkgname" || isok=0
+    # Update the package
+    "${handler}-update" "$pkgname" 2>&1 | logger "${handler}" || isok=0
+
+    if (( isok )); then
+        local depname depurl depbranch depsources
+
+        # Get the list of dependencies after update
+        if depfile-open "$pkgname"; then
+            postdeps=( $(depfile-pkgnames) )
+        fi
+
+        # Install new dependencies
+        for depname in "${postdeps[@]}"; do
+            if [[ " ${predeps[*]} " != *" $depname "* ]]; then
+                depfile-open "$pkgname"
+                depurl=$(depfile-geturl)
+                depbranch=$(depfile-geturl)
+                depsources=$(depfile-get SOURCES)
+
+                logger INFO "${pkgname}: Now requires '${depname}':"
+                logger-push
+                install-or-incref -n "$numrefs" -r "$depname" "$depurl" "$depbranch" "$depsources" || isok=0
+                logger-pop
+
+                # Did the height increase?
+                instfile-seek "$depfile"
+                maxheight=$(max "$maxheight" "$(instfile-get HEIGHT)")
+            fi
+
+            (( isok )) || break
         done
 
-        logger-pop
+        if (( isok )); then
+            # Remove stale dependencies
+            for depname in "${predeps[@]}"; do
+                if [[ " ${postdeps[*]} " != *" $depname "* ]]; then
+                    logger INFO "${pkgname}: No longer requires '${depname}':"
+                    logger-push
+                    decref-by-pkgname -n "$numrefs" -r "$depname" || isok=0
+                    logger-pop
+
+                    # We don't care if the height decreased since the height is
+                    # only used to determine the relative order in which
+                    # packages need to be initialized; if the height decreased
+                    # it means there were packages that needed to be
+                    # initialized before $pkgname that got removed so our
+                    # relative order in which the packages need to be
+                    # initialized is still maintained by keeping the current
+                    # height for $pkgname.
+                fi
+
+                (( isok )) || break
+            done
+
+            if (( isok )); then
+                # Update the height
+                instfile-seek "$pkgname"
+                instfile-set HEIGHT "$maxheight"
+                instfile-save || isok=0
+
+                if (( isok )); then
+                    # Success!
+                    logger OK "${pkgname}: UPDATED"
+                    return 0
+                fi
+            fi
+
+            # ;&
+        fi
+
+        # ;&
     fi
 
-    # Re-activate the active packages
-    if (( isok )); then
-        # Notification
-        logger INFO "Reactive packages..."
-
-        dpm-activate "${active[@]}" || isok=0
-    fi
-
-    # Remove the backup installation file
-    if (( isok )); then
-        logger INFO "Remove the backup installation record..."
-        rm -f "$bkupfile"
-
-        logger GOOD "RECOVER SUCCESS!"
-        return 0
-    fi
-
-    # Notification
-    logger FAIL "FAILED to recover"
-
-    logger INFO "Revert installation record from '${bkupfile}'..." \
-    && rm -f "$failfile"              \
-    && mv -f "$instfile" "$failfile"  \
-    && mv -f "$bkupfile" "$instfile"  \
-    && logger INFO "Revert complete." \
-    || logger INFO "Revert failed."
-
+    # Failed!
+    logger FAIL "${pkgname}: FAILED to update"
     return 1
 }
 
 
-function dpm-cleanup() {
+##############################################################################
+# RECOVER
+
+function dpm-recover() {
     local pkgname
     local isok=1
+
+    # Validate arguments
+    (( $# )) && logger FAIL "Too many arguments" && return 1
+
+    # Notification
+    logger INFO "RECOVER..."
+
+    # Backup the install file
+    logger INFO "Backup the install file..."
+    instfile-backup || isok=0
+
+    if (( isok )); then
+        # Reset height and reference counters
+        logger INFO "Reset height and reference counters..."
+        for pkgname in $(instfile-pkgnames); do
+            instfile-seek "$pkgname"
+            instfile-set HEIGHT 0
+            instfile-set NUMREF 0
+        done
+
+        # Rebuild the height and reference of direct installed packages
+        for pkgname in $(instfile-direct); do
+            recover-by-pkgname "$pkgname" || isok=0
+
+            (( isok )) || break
+        done
+
+        if (( isok )); then
+            # Success!
+            logger OK "SUCCESS: Recovered"
+            return 0
+        fi
+
+        # Restore the backup install file
+        logger FAIL "FAILED to recover, restore backup install file..."
+        instfile-restore
+    fi
+
+    # Failed!
+    return 1
+}
+
+
+function recover-by-pkgname() {
+    local OPTIND OPTERR OPTARG opt
+    local pkgname
+    local visited=""
+    local depname depurl depbranch
+    local recovered=()
+    local maxheight=0
+    local isok=1
+
+    # Check arguments
+    while getopts "1" opt; do
+        case "$opt" in
+            v)  visited=$OPTARG   ;;
+        esac
+    done
+    shift $((OPTIND-1))
+
+    # Optionless arguments
+    pkgname=$1
+
+    # Sanity check
+    if [[ " $visited " == *" $pkgname "* ]]; then
+        logger FAIL "${pkgname}: Circular dependency"
+        return 1
+    fi
+    if ! pkg-isinstalled "$pkgname"; then
+        logger WARN "${pkgname}: Missing package, ignored"
+        # ;&
+    fi
+
+    # Notification
+    logger INFO "${pkgname}: Recover..."
+
+    # Recover the dependencies first
+    depfile-open "$pkgname"
+
+    for depname in $(depfile-pkgnames); do
+        logger INFO "${pkgname}: Requires ${depname}..."
+        logger-push
+
+        if pkg-isinstalled "$depname"; then
+            recover-by-pkgname "$depname" \
+            && recovered+=( "$depname" )
+        else
+            # Get information about the dependency
+            depfile-open "$pkgname"
+            depfile-seek "$depname"
+            depurl=$(depfile-geturl)           # Default URL
+            depbranch=$(depfile-getbranch)     # Default branch
+
+            # Install the missing dependency
+            install-by-url -r "$depname" "$depurl" "$depbranch" \
+            && recovered+=( "$depname" )
+        fi || isok=0
+
+        if (( isok )); then
+            # Update the maxheight
+            instfile-seek "$depname"
+            maxheight=$(max "$maxheight" "$(instfile-get HEIGHT)")
+        fi
+
+        logger-pop
+        (( isok )) || break
+    done
+
+    if (( isok )); then
+        # Recover the height and the reference counter
+        instfile-seek "$pkgname"
+        instfile-set HEIGHT $((maxheight + 1))
+        instfile-incref
+        instfile-save || isok=0
+
+        if (( isok )); then
+            # Success!
+            logger OK "${pkgname}: Recovered"
+            return 0
+        fi
+    fi
+
+    # Rollback the reference counters
+    for depname in "${recovered[@]}"; do
+        logger-push
+        decref-by-pkgname -r -v "$visited $pkgname" "$depname"
+        logger-pop
+    done
+
+    # Failed!
+    logger FAIL "${pkgname}: Failed to recover"
+    return 1
+}
+
+
+##############################################################################
+# CLEANUP
+
+function dpm-cleanup() {
+    local pkgname
+    local counter=0
+    local isok=1
+
+    # Validate arguments
+    (( $# )) && logger FAIL "Too many arguments" && return 1
 
     # Notification
     logger INFO "CLEANUP..."
 
     # Get the list of packages to remove
-    while IFS= read -r pkgname; do
-        if (( $(instfile-numref "$pkgname") == 0 )); then
-            local instflags=$(instfile-flags "$pkgname")
-            local flags=()
+    for pkgname in $(installed); do
+        pkginfo-seek "$pkgname"
 
-            logger INFO "${pkgname}: No longer used:"
+        # Remove
+        if (( $(pkginfo-get NUMREF) == 0 )); then
+            remove-by-pkgname "$pkgname" || isok=0
 
-            if [[ "$instflags" == *D* ]]; then
-                flags+=( -d )
+            if (( isok )); then
+                (( counter += 1 ))
+                continue
             fi
 
-            logger-push
-            dpm-remove "${flags[@]}" "$pkgname" || isok=0
-            logger-pop
+            break
         fi
-    done < <(installed-list)
+    done
 
     # Success!
     if (( isok )); then
-        logger GOOD "CLEANUP SUCCESS!"
+        logger OK "SUCCESS: Removed ${counter} package(s)"
         return 0
     fi
 
     # Notification
-    logger FAIL "${pkgname}: FAILED to cleanup, see above for errors."
-
+    logger FAIL "FAILED to cleanup"
     return 1
 }
 
 
+##############################################################################
+# LIST
+
 function dpm-list() {
-    local optstring long=0
-    local format="  %*s  %*s  %*s  %-*s"
-    local header=( "PACKAGE" "NUMREF" "HEIGHT" "FLAGS" )
-    local hline=(  "-------" "------" "------" "-----" )
-    local widths=( 15 6 6 5 )
-    local delim=$'\x02'
-    local rows=()
+    local optstring
+    local long=0
+    local header=( "PKGNAME" "NUMREF" "HEIGHT" "FLAGS" )
+    local format=""
     local isok=1
 
     # Parse arguments
@@ -924,167 +1083,101 @@ function dpm-list() {
         [[ "$1" == "--" ]] && shift && break
 
         case "$1" in
-            -l|--long)  long=1  ;;
+            -l|--long)  long=1 ;;
         esac
 
         shift
     done
 
+    # Validate arguments
+    (( $# )) && logger FAIL "Too many arguments" && return 1
+
     # Long option initialization
     if (( long )); then
-        local i
-
-        format+="  %-*s  %-*s"
         header+=( "BRANCH" "URL" )
-        widths=()
+    fi
 
-        for (( i=0; i < ${#header[@]}; i++ )); do
-            widths+=( ${#header[i]} )
+    # Lookup table
+    function format-lookup() {
+        case "$1" in
+                URL) printf "%s" "  %-1s"  ;;
+              FLAGS) printf "%s" "  %-5s"  ;;
+             BRANCH) printf "%s" "  %-15s" ;;
+             HEIGHT) printf "%s" "  %6s"   ;;
+             NUMREF) printf "%s" "  %6s"   ;;
+            PKGNAME) printf "%s" "  %15s"  ;;
+                  *) logger FAIL "${1}: Invalid format"
+                     return 1
+        esac
+    }
+
+    # Build the format
+    if true; then
+        local col
+
+        for col in "${header[@]}"; do
+            format+=$(format-lookup "$col")
         done
+        format+="\n"
     fi
 
-    #
-    # In long option mode, we build the list of packages first so we can
-    # calculate the maximum display width for each column before printing them.
-    # Otherwise we print them outright for speed.
-    #
-
-    # Adjust the first column width in short option
-    if (( ! long )); then
-        local width=${#header[0]}
-        local pkgname
-
-        while IFS= read -r pkgname; do
-            (( width < ${#pkgname} )) && width=${#pkgname}
-        done < <(installed-list)
-
-        widths[0]=$width
+    # Header
+    if true; then
+        printf "$format" "${header[@]}"
+        printf "$format" "${header[@]//?/-}"
     fi
 
-    # Header in short option
-    if (( ! long )); then
-        iprintf "$format\n" "${widths[@]}" "${header[@]}"
-        iprintf "$format\n" "${widths[@]}" "${hline[@]}"
-    fi
-
-    # Build installed package list
+    # Build installed and missing package list
     if true; then
         local pkgname
 
-        while IFS= read -r pkgname; do
-            local numref=$(instfile-numref "$pkgname")
-            local height=$(instfile-height "$pkgname")
-            local flags=$(instfile-flags "$pkgname")
+        for pkgname in $(installed) $(instfile-missing); do
+            local row=()
+            local col
 
-            # If there are issues
-            (( numref <= 0 )) && isok=0
+            pkginfo-seek "$pkgname"
 
-            if (( long )); then
-                local url=$(pkg-geturl "$pkgname")
-                local branch=$(pkg-getbranch "$pkgname")
-
-                # If there are issues
-                [[ -z "$url"     ]] && url="?"    && isok=0
-                [[ -z "$branch"  ]] && branch="?" && isok=0
-
-                rows+=( "${pkgname}${delim}${numref}${delim}${height}${delim}${flags}${delim}${branch}${delim}${url}" )
-                (( ${widths[0]} < ${#pkgname}  )) && widths[0]=${#pkgname}
-                (( ${widths[1]} < ${#numref}   )) && widths[1]=${#numref}
-                (( ${widths[2]} < ${#height}   )) && widths[2]=${#height}
-                (( ${widths[3]} < ${#flags}    )) && widths[3]=${#flags}
-                (( ${widths[4]} < ${#branch}   )) && widths[4]=${#branch}
-                (( ${widths[5]} < ${#url}      )) && widths[5]=${#url}
-            else
-                iprintf "$format\n" "${widths[@]}" "$pkgname" "$numref" "$height" "$flags"
-            fi
-        done < <(installed-list)
-    fi
-
-    # Build missing packages list
-    if true; then
-        local pkgname
-
-        while IFS= read -r pkgname; do
-            local numref=$(instfile-numref "$pkgname")
-            local height=$(instfile-height "$pkgname")
-            local flags=$(instfile-flags "$pkgname")
-
-            if (( long )); then
-                rows+=( "${pkgname}${delim}${numref}${delim}${height}${delim}${flags}${delim}-${delim}-" )
-                (( ${widths[0]} < ${#pkgname}  )) && widths[0]=${#pkgname}
-                (( ${widths[1]} < ${#numref}   )) && widths[1]=${#numref}
-                (( ${widths[2]} < ${#height}   )) && widths[2]=${#height}
-                (( ${widths[3]} < ${#flags}    )) && widths[3]=${#flags}
-            else
-                iprintf "$format\n" "${widths[@]}" "$pkgname" "$numref" "$height" "$flags"
-            fi
-
-            isok=0
-        done < <(missing-list)
-    fi
-
-    # Print header
-    if (( long )); then
-        local output
-        local hval=()
-        local hbar=()
-        local i
-
-        # Interleave with column widths
-        for (( i=0; i < ${#widths[@]}; i++ )); do
-            hval+=( "${widths[i]}" "${header[i]}" )
-            hbar+=( "${widths[i]}" "$(repeat - ${widths[i]})" )
-        done
-
-        printf "$format\n" "${hval[@]}"
-        printf "$format\n" "${hbar[@]}"
-    fi
-
-    # Print packages
-    if (( long )); then
-        local i
-
-        for (( i=0; i < ${#rows[@]}; i++ )); do
-            local cols=()
-            local args=()
-            local j
-
-            # Get the column values
-            IFS=${delim} read -ra cols <<<"${rows[i]}"
-
-            # Interleave with column widths
-            for (( j=0; j < ${#widths[@]}; j++ )); do
-                args+=( "${widths[j]}" "${cols[j]}" )
+            for col in "${header[@]}"; do
+                if [[ "$col" == "PKGNAME" ]]; then
+                    row+=( "$pkgname" )
+                else
+                    row+=( "$(pkginfo-get "$col")" )
+                fi
             done
 
-            # Print
-            printf "$format\n" "${args[@]}"
+            printf "$format" "${row[@]}"
         done
     fi
-
-    (( isok ))
 }
 
+
+##############################################################################
+# SETUP
 
 function dpm-setup() {
     local pkgname
     local path=0
     local tclpath=0
     local pythonpath=0
+    local isok=1
 
+    # Validate arguments
+    (( $# )) && logger FAIL "Too many arguments" && return 1
+
+    # DPM core
     cat <<EOF
 ##############################################################################
 # DPM CORE
 ##############################################################################
 EOF
 
-    while IFS= read -r pkgname; do
+    for pkgname in $(installed); do
         local pkgpath="${PKGDIR}/${pkgname}"
 
         [[ -d "${pkgpath}/bin"                   ]] && printf "%s\n" "PATH+=:${pkgpath}/bin" && path=1
         [[ -e "${pkgpath}/lib/pkgIndex.tcl"      ]] && printf "%s\n" "TCLLIBPATH+=:${pkgpath}/lib" && tclpath=1
         compgen -G "${pkgpath}/lib/*.py" >/dev/null && printf "%s\n" "PYTHONPATH+=:${pkgpath}/lib" && pythonpath=1
-    done < <(installed-list)
+    done
 
     printf 'export DPM=%q\n' "${PKGDIR}"
     (( path )) && printf "%s\n" "export PATH"
@@ -1092,7 +1185,7 @@ EOF
     (( pythonpath )) && printf "%s\n" "export PYTHONPATH"
 
     # Active packages
-    while IFS= read -r pkgname; do
+    for pkgname in $(active); do
         cat <<EOF
 
 ##############################################################################
@@ -1100,10 +1193,275 @@ EOF
 ##############################################################################
 EOF
 
-        pkg-setup "$pkgname"
-    done < <(dpm-active)
+        pkg-setup "$pkgname" || isok=0
+    done
 
-    return 0
+    (( isok ))
+}
+
+
+##############################################################################
+# ACTIVATE
+
+function dpm-activate() {
+    local OPTIND OPTERR OPTARG opt
+    local deactivate=0
+    local pkgname
+    local isok=1
+
+    # Check arguments
+    while getopts "1" opt; do
+        case "$opt" in
+            1)  deactivate=1 ;;
+        esac
+    done
+    shift $((OPTIND-1))
+
+    # Validate arguments
+    (( $# == 0 )) && logger FAIL "Must specify PKGNAME" && return 1
+
+    # Activate
+    for pkgname in "$@"; do
+        if (( deactivate )); then
+            logger INFO "DEACTIVATE ${pkgname}..."
+        else
+            logger INFO "ACTIVATE ${pkgname}..."
+        fi
+
+        # Validate package
+        ! instfile-seek "$pkgname" && logger FAIL "${pkgname}: Invalid PKGNAME" && isok=0 && break
+
+        # Activate/Deactivate
+        if (( deactivate )); then
+            instfile-clearflags A
+        else
+            instfile-setflags A
+        fi || isok=0
+
+        if (( isok )); then
+            # Success
+            continue
+        fi
+
+        # Failed
+        break
+    done
+
+    if (( isok )); then
+        # Save the updates
+        logger INFO "SAVE install file..."
+        instfile-save || isok=0
+
+        if (( isok )); then
+            logger INFO "SAVE active file..."
+            active-save || isok=0
+
+            if (( isok )); then
+                # Success!
+                if (( deactivate )); then
+                    logger OK "SUCCESS: $# package(s) deactivated"
+                else
+                    logger OK "SUCCESS: $# package(s) activated"
+                fi
+                return 0
+            fi
+
+            # ;&
+        fi
+
+        # ;&
+    fi
+
+    # Failed!
+    return 1
+}
+
+
+function dpm-deactivate() {
+    dpm-activate -1 "$@"
+}
+
+
+##############################################################################
+# REFERENCE
+
+function incref-by-pkgname() {
+    local OPTIND OPTERR OPTARG opt
+    local pkgname
+    local updated=()
+    local inverse=()
+    local numrefs=1
+    local recursive=0
+    local visited=""
+    local isok=1
+
+    # Check arguments
+    while getopts "1n:rv:" opt; do
+        case "$opt" in
+            1)  inverse+=( -1 )   ;;
+            n)  numrefs=$OPTARG   ;;
+            r)  recursive=1       ;;
+            v)  visited=$OPTARG   ;;
+        esac
+    done
+    shift $((OPTIND-1))
+
+    # Optionless arguments
+    pkgname=$1
+
+    # Sanity check
+    if [[ " $visited " == *" $pkgname "* ]]; then
+        logger FAIL "${pkgname}: Circular dependency"
+        return 1
+    fi
+    if ! pkg-isinstalled "$pkgname"; then
+        logger WARN "${pkgname}: Missing package, ignored"
+        # ;&
+    fi
+
+    # Increment/decrement reference
+    logger INFO "UPDATE ${pkgname} reference counter..."
+    instfile-seek "$pkgname"
+    instfile-incref "${inverse[@]}" -n "$numrefs"
+    instfile-save || isok=0
+
+    if (( isok )); then
+        local depname
+
+        # Increment/decrement reference of dependencies
+        if (( recursive )); then
+            local maxheight=0
+
+            depfile-open "$pkgname"
+
+            for depname in $(depfile-pkgnames); do
+                logger INFO "${pkgname}: Requires ${depname}..."
+                logger-push
+
+                incref-by-pkgname "${inverse[@]}" -n "$numrefs" -r -v "$visited $pkgname" "$depname" \
+                && updated+=( "$depname" )                                                           \
+                && instfile-seek "$depname"                                                          \
+                && maxheight=$(max "$maxheight" "$(instfile-get HEIGHT)")                            \
+                || isok=0
+
+                logger-pop
+                (( isok )) || break
+            done
+
+            if (( isok )); then
+                # Might as well update the height while we're here, in case it's broken
+                instfile-seek "$pkgname"
+                instfile-set HEIGHT $((maxheight + 1))
+                instfile-save || isok=0
+            fi
+        fi
+
+        if (( isok )); then
+            # Success!
+            logger OK "SUCCESS: Updated ${pkgname} reference counter"
+            return 0
+        fi
+
+        # Rollback the reference counter
+        instfile-seek "$pkgname"
+        instfile-decref "${inverse[@]}" -n "$numrefs"
+        for depname in "${updated[@]}"; do
+            logger-push
+            decref-by-pkgname "${inverse[@]}" -n "$numrefs" -r -v "$visited $pkgname" "$depname"
+            logger-pop
+        done
+        instfile-save
+    fi
+
+    # Failed!
+    logger FAIL "FAILED to update ${pkgname} reference counter"
+    return 1
+}
+
+
+function decref-by-pkgname() {
+    incref-by-pkgname -1 "$@"
+}
+
+
+##############################################################################
+# URL
+
+function url-gethandler() {
+    local url=$1
+    local handler
+
+    for handler in "${HANDLERS[@]}"; do
+        if ! command -v "${handler}-testurl" >& /dev/null; then
+            logger WARN "${handler}-testurl missing"
+            continue
+        fi
+
+        if "${handler}-testurl" "$url"; then
+            printf "%s" "$handler"
+            return 0
+        fi
+    done
+
+    logger FAIL "${url}: Cannot determine URL handler"
+    return 1
+}
+
+
+function url-pkgname() {
+    local url=$1
+    local handler
+    local isok=1
+
+    handler=$(url-gethandler "$url") || isok=0
+
+    if (( isok )); then
+        command -v "${handler}-urlpkg" >&/dev/null || isok=0
+
+        if (( isok )); then
+            "${handler}-urlpkg" "$url" || isok=0
+
+            # Success!
+            if (( isok )); then
+                return 0
+            fi
+        fi
+    fi
+
+    # Failed!
+    return 1
+}
+
+
+##############################################################################
+# PKG
+
+function pkg-isinstalled() {
+    local pkgname=$1
+
+    [[ -n "$pkgname" ]] && [[ -d "${PKGDIR}/${pkgname}" ]]
+}
+
+
+function pkg-gethandler() {
+    local pkgname=$1
+    local handler
+
+    for handler in "${HANDLERS[@]}"; do
+        if ! command -v "${handler}-testpkg" >& /dev/null; then
+            logger WARN "${handler}-testpkg missing"
+            continue
+        fi
+
+        if "${handler}-testpkg" "$pkgname"; then
+            # Success!
+            printf "%s" "$handler"
+            return 0
+        fi
+    done
+
+    logger FAIL "${pkgname}: Cannot determine package handler"
+    return 1
 }
 
 
@@ -1128,54 +1486,11 @@ function pkg-setup() {
 }
 
 
-function dpm-active() {
-    local active=()
-    local pkgname
-    local row
-
-    # Sort by height
-    while IFS= read -r pkgname; do
-        local height=$(instfile-height "$pkgname")
-
-        active[height]+="|$pkgname"
-    done < <(active-list)
-
-    # Print
-    for row in "${active[@]}"; do
-        local pkgs=()
-
-        IFS=\| read -ra pkgs <<<"${row:1}"
-        printf "%s\n" "${pkgs[@]}"
-    done
-}
-
-
-function dpm-activate() {
-    local activefile="${PKGDIR}/.active"
-
-    # Remove the activefile in case noclobber is set
-    rm -f "$activefile"
-
-    instfile-set -fA "$@" \
-    && dpm-active > "$activefile"
-}
-
-
-function dpm-deactivate() {
-    local activefile="${PKGDIR}/.active"
-
-    # Remove the activefile in case noclobber is set
-    rm -f "$activefile"
-
-    instfile-clear -fA "$@" \
-    && dpm-active > "$activefile"
-}
-
-
 ##############################################################################
-# HELPER FUNCTIONS
+# INSTALLED
 
-function installed-list() {
+function installed() {
+    local installed=()
     local pkgpath
 
     #
@@ -1186,349 +1501,507 @@ function installed-list() {
         if [[ -d "$pkgpath" ]]; then
             local pkgname=$(basename "$pkgpath")
 
-            printf "%s\n" "$pkgname"
+            installed+=( "$pkgname" )
         fi
     done
+
+    printf "%s" "${installed[*]}"
 }
 
 
-function missing-list() {
-    local pkgname rest
+##############################################################################
+# ACTIVE
+
+function active() {
+    local active=()
+    local i
+
+    #
+    # Return the names of packages in install file with the 'A' flags set,
+    # sorted by shortest height to the highest.
+    #
+
+    for (( i=0; i < ${#INSTFILE_FLAGS[@]}; i++ )); do
+        if [[ "${INSTFILE_FLAGS[i]}" == *A* ]]; then
+            active[INSTFILE_HEIGHT[i]]+=" ${INSTFILE_PKGNAME[i]}"
+        fi
+    done
+
+    printf "%s" "${active[*]#?}"
+}
+
+
+function active-save() {
+    local activefile=${1-"${PKGDIR}/.active"}
+    local tempfile
+    local isok=1
+
+    tempfile=$(mktemp "${PKGDIR}/.active.XXXXXX") || isok=0
+
+    if (( isok )); then
+        local pkgname
+
+        for pkgname in $(active); do
+            printf "%s\n" "$pkgname"
+        done >> "$tempfile" || isok=0
+
+        if (( isok )); then
+            mv -f "$tempfile" "$activefile" \
+            && chmod =rw "$activefile"      \
+            || isok=0
+
+            if (( isok )); then
+                return 0
+            fi
+
+            # ;&
+        fi
+
+        rm -f "$tempfile"
+    fi
+
+    return 1
+}
+
+
+##############################################################################
+# INSTFILE
+
+function instfile-open() {
+    local instfile=${1-"${PKGDIR}/.installed"}
+    local pkgname flags numref height rest
+
+    # Initialize
+    INSTFILE_PKGNAME=()
+    INSTFILE_FLAGS=()
+    INSTFILE_NUMREF=()
+    INSTFILE_HEIGHT=()
+    INSTFILE_REST=()
+    LAST_INSTFILE_PKGNAME=""
+    LAST_INSTFILE_INDEX=-1
+
+    # Read all columns
+    if [[ -r "$instfile" ]]; then
+        while IFS=\| read -r pkgname flags numref height rest; do
+            INSTFILE_PKGNAME+=( "$pkgname" )
+              INSTFILE_FLAGS+=( "$flags"   )
+             INSTFILE_NUMREF+=( "$numref"  )
+             INSTFILE_HEIGHT+=( "$height"  )
+               INSTFILE_REST+=( "$rest"    )
+        done < "$instfile"
+    fi
+}
+
+
+function instfile-save() {
+    local instfile=${1-"${PKGDIR}/.installed"}
+    local tempfile
+    local isok=1
+
+    tempfile=$(mktemp "${PKGDIR}/.installed.XXXXXX") || isok=0
+
+    if (( isok )); then
+        local i
+
+        for (( i=0; i < ${#INSTFILE_PKGNAME[@]}; i++ )); do
+            # Skip removed entries
+            [[ -z "${INSTFILE_PKGNAME[i]}" ]] && continue
+            (( INSTFILE_NUMREF[i] <= 0 )) && continue
+
+            printf "%s|%s|%s|%s|%s\n" "${INSTFILE_PKGNAME[i]}" \
+                                      "${INSTFILE_FLAGS[i]}"   \
+                                      "${INSTFILE_NUMREF[i]}"  \
+                                      "${INSTFILE_HEIGHT[i]}"  \
+                                      "${INSTFILE_REST[i]}"
+        done >> "$tempfile" || isok=0
+
+        if (( isok )); then
+            mv -f "$tempfile" "$instfile" \
+            && chmod =rw "$instfile"      \
+            || isok=0
+
+
+            # Success!
+            if (( isok )); then
+                return 0
+            fi
+
+            # ;&
+        fi
+
+        rm -f "$tempfile"
+    fi
+
+    # Failed!
+    logger FAIL "${instfile}: Save failed"
+    return 1
+}
+
+
+function instfile-backup() {
+    local instfile=${1-"${PKGDIR}/.installed"}
+    local bkupfile=${1-"${PKGDIR}/.installed.bkup"}
+    local isok=1
+
+    instfile-save "$bkupfile" || isok=0
+
+    if (( isok )); then
+        return 0
+    fi
+
+    logger FAIL "${instfile}: Backup failed"
+    return 1
+}
+
+
+function instfile-restore() {
+    local instfile=${1-"${PKGDIR}/.installed"}
+    local bkupfile=${1-"${PKGDIR}/.installed.bkup"}
+
+    instfile-open "$bkupfile" || isok=0
+
+    if (( isok )); then
+        rm -f "$bkupfile" || isok=0
+
+        if (( isok )); then
+            return 0
+        fi
+
+        # ;&
+    fi
+
+    return 1
+}
+
+
+function instfile-pkgnames() {
+    printf "%s" "${INSTFILE_PKGNAME[*]}"
+}
+
+
+function instfile-missing() {
+    local missing=()
+    local pkgname
 
     #
     # Return name of any package in the installation record that isn't
     # installed.
     #
 
-    instfile-memoize
+    for pkgname in $(instfile-pkgnames); do
+        if ! pkg-isinstalled "$pkgname"; then
+            missing+=( "$pkgname" )
+        fi
+    done
 
-    if [[ -n "$INSTALLED" ]]; then
-        while IFS=\| read -r pkgname rest; do
-            if ! pkg-isinstalled "$pkgname"; then
-                printf "%s\n" "$pkgname"
-            fi
-        done <<<"$INSTALLED"
-    fi
+    printf "%s" "${missing[*]}"
 }
 
 
-function active-list() {
-    local pkgname flags rest
+function instfile-direct() {
+    local direct=()
+    local pkgname
 
     #
-    # Return name of any package in the installation record with the active
-    # flag set.
+    # Return name of any package in the installation record that has the D
+    # flag.
     #
 
-    instfile-memoize
+    for pkgname in $(instfile-pkgnames); do
+        instfile-seek "$pkgname"
 
-    if [[ -n "$INSTALLED" ]]; then
-        while IFS=\| read -r pkgname flags rest; do
-            if [[ "$flags" == *A* ]]; then
-                printf "%s\n" "$pkgname"
-            fi
-        done <<<"$INSTALLED"
+        if [[ "$(instfile-get FLAGS)" == *D* ]]; then
+            direct+=( "$pkgname" )
+        fi
+    done
+
+    printf "%s" "${direct[*]}"
+}
+
+
+function instfile-mvrec() {
+    local pkgname1=$1
+    local pkgname2=$2
+
+    # Delete pkgname2 if it exists
+    instfile-rmrec "$pkgname2"
+
+    # Rename pkgname1 to pkgname2
+    instfile-seek "$pkgname1"
+    instfile-set PKGNAME "$pkgname2"
+}
+
+
+function instfile-rmrec() {
+    local pkgname=$1
+    local removed=0
+
+    if instfile-seek "$pkgname"; then
+        INSTFILE_PKGNAME[LAST_INSTFILE_INDEX]=""
+        INSTFILE_FLAGS[LAST_INSTFILE_INDEX]=""
+        INSTFILE_NUMREF[LAST_INSTFILE_INDEX]=0
+        INSTFILE_HEIGHT[LAST_INSTFILE_INDEX]=0
+
+        removed=1
     fi
+
+    (( removed ))
 }
 
 
-function instfile-set() {
-    local instfile="${PKGDIR}/.installed"
-    local tmpfile="${instfile}.tmp"
-    local pkgname flags rest
-    local setflags=""
-    local optstring
-    local isok=1
+function instfile-seek() {
+    local pkgname=$1
+    local found=1
 
-    # Clear the memoized data
-    INSTALLED=
+    if [[ "$LAST_INSTFILE_PKGNAME" != "$pkgname" ]]; then
+        local i
 
-    # Parse arguments
-    optstring=$(egetopt "f:" "flags:" "$@") || return 1
-    eval set -- "$optstring"
+        # Point past the last record by default
+        LAST_INSTFILE_PKGNAME=$pkgname
+        LAST_INSTFILE_INDEX=${#INSTFILE_PKGNAME[@]}
+        found=0
 
-    while (( $# )); do
-        [[ "$1" == "--" ]] && shift && break
+        for (( i=0; i < ${#INSTFILE_PKGNAME[@]}; i++ )); do
+            if [[ "${INSTFILE_PKGNAME[i]}" == "$pkgname" ]]; then
+                LAST_INSTFILE_INDEX=$i
+                found=1
+                break
+            fi
+        done
+    fi
 
-        case "$1" in
-            -f|--flags) setflags=$2 && shift ;;
-        esac
-
-        shift
-    done
-
-    # Delete tmpfile in case noclobber is set
-    rm -f "$tmpfile"
-
-    # Update records
-    while IFS=\| read -r pkgname flags rest; do
-        if [[ " $* " == *" $pkgname "* ]]; then
-            [[ "$flags" != *"$setflags"* ]] && flags+=$setflags
-        fi
-
-        printf "%s|%s|%s\n" "$pkgname" "$flags" "$rest"
-    done < "$instfile" >> "$tmpfile" || isok=0
-
-    (( isok )) && mv -f "$tmpfile" "$instfile" && instfile-memoize
-}
-
-
-function instfile-clear() {
-    local instfile="${PKGDIR}/.installed"
-    local tmpfile="${instfile}.tmp"
-    local pkgname flags rest
-    local clearflags=""
-    local optstring
-    local isok=1
-
-    # Clear the memoized data
-    INSTALLED=
-
-    # Parse arguments
-    optstring=$(egetopt "f:" "flags:" "$@") || return 1
-    eval set -- "$optstring"
-
-    while (( $# )); do
-        [[ "$1" == "--" ]] && shift && break
-
-        case "$1" in
-            -f|--flags) clearflags=$2 && shift ;;
-        esac
-
-        shift
-    done
-
-    # Delete tmpfile in case noclobber is set
-    rm -f "$tmpfile"
-
-    # Update records
-    while IFS=\| read -r pkgname flags rest; do
-        if [[ " $* " == *" $pkgname "* ]]; then
-            flags=${flags//$clearflags/}
-        fi
-
-        printf "%s|%s|%s\n" "$pkgname" "$flags" "$rest"
-    done < "$instfile" >> "$tmpfile" || isok=0
-
-    (( isok )) && mv -f "$tmpfile" "$instfile" && instfile-memoize
-}
-
-
-function instfile-incr() {
-    local instfile="${PKGDIR}/.installed"
-    local tmpfile="${instfile}.tmp"
-    local pkgname flags numref height rest
-    local setflags=""
-    local newheight=0
-    local updated=()
-    local optstring
-    local isok=1
-
-    # Clear the memoized data
-    INSTALLED=
-
-    # Parse arguments
-    optstring=$(egetopt "H:f:" "height:,flags:" "$@") || return 1
-    eval set -- "$optstring"
-
-    while (( $# )); do
-        [[ "$1" == "--" ]] && shift && break
-
-        case "$1" in
-            -H|--height) newheight=$2 && shift ;;
-            -f|--flags)  setflags=$2 && shift ;;
-        esac
-
-        shift
-    done
-
-    # Delete tmpfile in case noclobber is set
-    rm -f "$tmpfile"
-
-    # Update existing records
-    while IFS=\| read -r pkgname flags numref height rest; do
-        if [[ " $* " == *" $pkgname "* ]]; then
-            height=$newheight
-            numref=$(( numref + 1 ))
-            [[ "$flags" != *"$setflags"* ]] && flags+=$setflags
-
-            updated+=( "$pkgname" )
-        fi
-
-        printf "%s|%s|%s|%s|%s\n" "$pkgname" "$flags" "$numref" "$height" "$rest"
-    done < "$instfile" >> "$tmpfile" || isok=0
-
-    # Add new records
-    for pkgname in "$@"; do
-        if [[ " ${updated[*]} " != *" $pkgname "* ]]; then
-            printf "%s|%s|%s|%s|%s\n" "$pkgname" "$setflags" "1" "$newheight" ""
-        fi
-    done >> "$tmpfile" || isok=0
-
-    (( isok )) && mv -f "$tmpfile" "$instfile" && instfile-memoize
-}
-
-
-function instfile-decr() {
-    local instfile="${PKGDIR}/.installed"
-    local tmpfile="${instfile}.tmp"
-    local pkgname flags numref height rest
-    local clearflags=""
-    local optstring
-    local isok=1
-
-    # Clear the memoized data
-    INSTALLED=
-
-    # Parse arguments
-    optstring=$(egetopt "f:" "flags:" "$@") || return 1
-    eval set -- "$optstring"
-
-    while (( $# )); do
-        [[ "$1" == "--" ]] && shift && break
-
-        case "$1" in
-            -f|--flags) clearflags=$2 && shift ;;
-        esac
-
-        shift
-    done
-
-    # Update the installation file
-    while IFS=\| read -r pkgname flags numref height rest; do
-        if [[ " $* " == *" $pkgname "* ]]; then
-            numref=$(( numref - 1 ))
-            flags=${flags//$clearflags/}
-        fi
-
-        if (( numref > 0 )); then
-            printf "%s|%s|%s|%s|%s\n" "$pkgname" "$flags" "$numref" "$height" "$rest"
-        fi
-    done < "$instfile" > "$tmpfile" || isok=0
-
-    (( isok )) && mv -f "$tmpfile" "$instfile" && instfile-memoize
+    (( found ))
 }
 
 
 function instfile-get() {
-    local pkgname=$1
-    local index=$2
-    local row=()
+    local name=$1
+    local got=1
 
-    instfile-memoize
+    case "$name" in
+        PKGNAME)  printf "%s" "${INSTFILE_PKGNAME[LAST_INSTFILE_INDEX]}" ;;
+          FLAGS)  printf "%s" "${INSTFILE_FLAGS[LAST_INSTFILE_INDEX]}"   ;;
+         NUMREF)  printf "%d" "${INSTFILE_NUMREF[LAST_INSTFILE_INDEX]}"  ;;
+         HEIGHT)  printf "%d" "${INSTFILE_HEIGHT[LAST_INSTFILE_INDEX]}"  ;;
+              *)  logger FAIL "${name}: Invalid install file column"
+                  got=0
+    esac
 
-    while IFS=\| read -ra row; do
-        if [[ "${row[0]}" == "$pkgname" ]]; then
-            printf "%s" "${row[index]}"
-            break
-        fi
-
-        false
-    done <<<"$INSTALLED"
+    (( got ))
 }
 
 
-function instfile-flags() {
-    local pkgname=$1
+function instfile-set() {
+    local name=$1
+    local value=$2
+    local set=1
 
-    instfile-get "$pkgname" 1
-}
-
-
-function instfile-numref() {
-    local pkgname=$1
-    local value=$(instfile-get "$pkgname" 2)
-
-    [[ -z "$value" ]] && value=0
-
-    printf "%s" "$value"
-}
-
-
-function instfile-height() {
-    local pkgname=$1
-    local value=$(instfile-get "$pkgname" 3)
-
-    [[ -z "$value" ]] && value=0
-
-    printf "%s" "$value"
-}
-
-
-function instfile-memoize() {
-    local instfile="${PKGDIR}/.installed"
-
-    # Memoize the data
-    if [[ -z "$INSTALLED" ]]; then
-        INSTALLED=$(cat "$instfile")
+    # Initialize if inserting a new record
+    if [[ -z "${INSTFILE_PKGNAME[LAST_INSTFILE_INDEX]-}" ]]; then
+        INSTFILE_PKGNAME[LAST_INSTFILE_INDEX]=$LAST_INSTFILE_PKGNAME
+          INSTFILE_FLAGS[LAST_INSTFILE_INDEX]=""
+         INSTFILE_NUMREF[LAST_INSTFILE_INDEX]=0
+         INSTFILE_HEIGHT[LAST_INSTFILE_INDEX]=0
     fi
+
+    case "$name" in
+        PKGNAME)                  LAST_INSTFILE_PKGNAME=$value
+                  INSTFILE_PKGNAME[LAST_INSTFILE_INDEX]=$value ;;
+          FLAGS)    INSTFILE_FLAGS[LAST_INSTFILE_INDEX]=$value ;;
+         NUMREF)   INSTFILE_NUMREF[LAST_INSTFILE_INDEX]=$value ;;
+         HEIGHT)   INSTFILE_HEIGHT[LAST_INSTFILE_INDEX]=$value ;;
+              *)  logger FAIL "${name}: Invalid instfile column"
+                  set=0
+    esac
+
+    (( set ))
 }
 
 
-function url-gethandler() {
-    local url=$1
-    local handler
+function instfile-setflags() {
+    local newflags=$1
+    local flags=$(instfile-get FLAGS)
+    local i
 
-    for handler in "${HANDLERS[@]}"; do
-        if "${handler}-testurl" "$url"; then
-            printf "%s\n" "$handler"
-            break
+    # Add the new flags
+    for (( i=0; i < ${#newflags}; i++ )); do
+        local c=${newflags:i:1}
+
+        if [[ "$flags" != *"$c"* ]]; then
+            flags+=$c
         fi
-
-        handler=""
     done
 
-    [[ -n "$handler" ]]
+    instfile-set FLAGS "$flags"
 }
 
 
-function pkg-gethandler() {
-    local pkgname=$1
-    local handler
+function instfile-clearflags() {
+    local oldflags=$1
+    local flags=$(instfile-get FLAGS)
+    local i
 
-    for handler in "${HANDLERS[@]}"; do
-        if "${handler}-testpkg" "$pkgname"; then
-            printf "%s\n" "$handler"
-            break
-        fi
+    # Clear stale flags
+    flags=${flags//[${oldflags}]/}
 
-        handler=""
+    instfile-set FLAGS "$flags"
+}
+
+
+function instfile-incref() {
+    local OPTIND OPTERR OPTARG opt
+    local numref=$(instfile-get NUMREF)
+    local step=1
+
+    # Check arguments
+    while getopts "1n:" opt; do
+        case "$opt" in
+            1)  step=$((step * -1))     ;;
+            n)  step=$((step * OPTARG)) ;;
+        esac
     done
+    shift $((OPTIND-1))
 
-    [[ -n "$handler" ]]
+    instfile-set NUMREF $((numref + step))
 }
 
 
-function pkg-isinstalled() {
-    local pkgname=$1
-
-    [[ -n "$pkgname" ]] && [[ -d "${PKGDIR}/${pkgname}" ]]
+function instfile-decref() {
+    instfile-incref -1 "$@"
 }
 
 
-function pkg-geturl() {
-    local pkgname=$1
-    local handler=$(pkg-gethandler "$pkgname")
+##############################################################################
+# DEPFILE
 
-    [[ -n "$handler" ]] && "${handler}-geturl" "$pkgname"
-}
-
-
-function pkg-getbranch() {
-    local pkgname=$1
-    local handler=$(pkg-gethandler "$pkgname")
-
-    [[ -n "$handler" ]] && "${handler}-getbranch" "$pkgname"
-}
-
-
-function pkg-getdeps() {
+function depfile-open() {
     local pkgname=$1
     local depfile="${PKGDIR}/${pkgname}/etc/dpm-deps"
 
+    # Skip if already open
+    [[ "$LAST_DEPFILE" == "$depfile" ]] && return
+
+    # Initialize
+    DEPFILE_PKGNAME=()
+    DEPFILE_SOURCES=()
+    LAST_DEPFILE=$depfile
+    LAST_DEPFILE_PKGNAME=""
+    LAST_DEPFILE_SOURCES=()
+    LAST_DEPFILE_INDEX=-1
+
+    # Read all columns
     if [[ -r "$depfile" ]]; then
-        cat "$depfile"
+        local depname sources rest
+
+        while IFS=\| read -r depname sources rest; do
+            DEPFILE_PKGNAME+=( "$depname" )
+            DEPFILE_SOURCES+=( "$sources" )
+        done < "$depfile"
+    else
+        false
     fi
+}
+
+
+function depfile-pkgnames() {
+    printf "%s" "${DEPFILE_PKGNAME[*]}"
+}
+
+
+function depfile-seek() {
+    local pkgname=$1
+
+    if [[ "$LAST_DEPFILE_PKGNAME" != "$pkgname" ]]; then
+        local i
+
+        for (( i=0; i < ${#DEPFILE_PKGNAME[@]}; i++ )); do
+            if [[ "${DEPFILE_PKGNAME[i]}" == "$pkgname" ]]; then
+                LAST_DEPFILE_PKGNAME=$pkgname
+                LAST_DEPFILE_SOURCES=( ${DEPFILE_SOURCES[i]} )
+                LAST_DEPFILE_INDEX=$i
+                break
+            fi
+
+            false
+        done
+    fi
+}
+
+
+function depfile-get() {
+    local name=$1
+
+    case "$name" in
+        PKGNAME)  printf "%s" "${DEPFILE_PKGNAME[LAST_DEPFILE_INDEX]}" ;;
+        SOURCES)  printf "%s" "${DEPFILE_SOURCES[LAST_DEPFILE_INDEX]}" ;;
+              *)  logger FAIL "${name}: Invalid depfile column"
+                  false
+    esac
+}
+
+
+function depfile-geturl() {
+    local i=${1-0}
+
+    if (( i*2 < ${#LAST_DEPFILE_SOURCES[@]} )); then
+        printf "%s" "${LAST_DEPFILE_SOURCES[i*2]-}"
+        return 0
+    fi
+
+    return 1
+}
+
+
+function depfile-getbranch() {
+    local i=${1-0}
+    local branch
+
+    #
+    # The branch is an optional config item.  Its absence, or a star (*) if a
+    # placeholder string is required, are both equivalent to a blank branch.
+    # 
+    # When installing, a blank branch installs the default branch.  When
+    # testing, a blank branch matches any branch.
+    #
+
+    if (( i*2 < ${#LAST_DEPFILE_SOURCES[@]} )); then
+        local branch=${LAST_DEPFILE_SOURCES[i*2+1]-}
+
+        if [[ "$branch" == "*" ]]; then
+            branch=""
+        fi
+
+        printf "%s" "$branch"
+        return 0
+    fi
+
+    return 1
+}
+
+
+##############################################################################
+# PKGINFO
+
+function pkginfo-seek() {
+    local pkgname=$1
+    local isok=1
+
+    LAST_PKGNAME=$pkgname
+    LAST_PKGHANDLER=$(pkg-gethandler "$pkgname" 2>/dev/null) || isok=0
+    instfile-seek "$pkgname" || isok=0
+
+    (( isok ))
+}
+
+
+function pkginfo-get() {
+    local name=$1
+
+    case "$name" in
+        BRANCH) [[ -n "$LAST_PKGHANDLER" ]] && "${LAST_PKGHANDLER}-getbranch" "$LAST_PKGNAME" ;;
+           URL) [[ -n "$LAST_PKGHANDLER" ]] && "${LAST_PKGHANDLER}-geturl" "$LAST_PKGNAME"    ;;
+             *) instfile-get "$name" ;;
+    esac
 }
 
 
@@ -1541,6 +2014,12 @@ function git-testdeps() {
     # Check for git
     if ! command -v git >/dev/null; then
         logger FAIL "Please install 'git'"
+        isok=0
+    fi
+
+    # Check for awk
+    if ! command -v awk >/dev/null; then
+        logger FAIL "Please install awk."
         isok=0
     fi
 
@@ -1596,8 +2075,8 @@ function git-remove() {
     # Test the repository for changes
     numchanges=$(git -C "$pkgpath" status --porcelain | wc -l) || isok=0
 
-    # Remove the repository
     if (( isok )) && (( numchanges == 0 )); then
+        # Remove the repository
         rm -rf "$pkgpath" || isok=0
     elif (( isok )); then
         printf "%s\n" "${pkgname}: Has uncommitted changes, will not remove." 1>&2
@@ -1635,44 +2114,6 @@ function git-getbranch() {
 ##############################################################################
 # GENERIC UTILITIES
 
-function logger() {
-    local level=$1 && shift
-    local cbegin="" cend=""
-    local line
-
-    # Colorize
-    case "$level" in
-        GOOD)   [[ -t 1 ]] && cbegin="\033[1;32m" && cend="\033[0m" ;;
-        WARN)   [[ -t 2 ]] && cbegin="\033[1;33m" && cend="\033[0m" ;;
-        FAIL)   [[ -t 2 ]] && cbegin="\033[1;31m" && cend="\033[0m" ;;
-    esac
-
-    #
-    # Print arguments or stdin.
-    #
-    while IFS= read -r line; do
-        case "$level" in
-            WARN|FAIL)  printf "${cbegin}%*s[%4s] %s${cend}\n" "$LOGGER_INDENT" "" "${level::4}" "$line" 1>&2 ;;
-            *)          printf "${cbegin}%*s[%4s] %s${cend}\n" "$LOGGER_INDENT" "" "${level::4}" "$line"      ;;
-        esac
-    done < <( (( $# )) && printf "%s\n" "$@" || cat )
-}
-
-
-function logger-push() {
-    local count=${1-1}
-
-    (( LOGGER_INDENT += 2 * count )) || :
-}
-
-
-function logger-pop() {
-    local count=${1-1}
-
-    (( LOGGER_INDENT -= 2 * count )) || :
-}
-
-
 function egetopt() {
     local shortopts=$1 && shift
     local longopts=$1 && shift
@@ -1694,7 +2135,7 @@ function egetopt() {
             [[ "$shortopts" == *"${opt}:"* ]] && output+=( "$OPTARG" )
             [[ "$shortopts" != *"${opt}"* ]] && isok=0
         done
-        shift $(( OPTIND - 1 ))
+        shift $((OPTIND-1))
 
         printf " %q" "${output[@]}" -- "$@"
         printf "\n"
@@ -1704,34 +2145,60 @@ function egetopt() {
 }
 
 
-function repeat() {
-    local char=$1
-    local count=$2
-    local output=""
-    local i
+function logger() {
+    local level=$1 && shift
+    local cbegin="" cend=""
+    local line
 
-    for (( i=0; i < count; i++ )); do
-        output+="$char"
-    done
+    # Colorize
+    case "$level" in
+        OK)     [[ -t 1 ]] && cbegin="\033[1;32m" && cend="\033[0m" ;;
+        WARN)   [[ -t 2 ]] && cbegin="\033[1;33m" && cend="\033[0m" ;;
+        FAIL)   [[ -t 2 ]] && cbegin="\033[1;31m" && cend="\033[0m" ;;
+    esac
 
-    printf "%s" "$output"
+    # Set width
+    case "${#level}" in
+        1)  level="  $level " ;;
+        2)  level=" $level "  ;;
+        3)  level=" $level"   ;;
+        *)  level=${level::4} ;;
+    esac
+
+    #
+    # Print arguments or stdin.
+    #
+    while IFS= read -r line; do
+        case "$level" in
+            WARN|FAIL)  printf "${cbegin}%*s[%4s] %s${cend}\n" "$LOGGER_INDENT" "" "$level" "$line" 1>&2 ;;
+            *)          printf "${cbegin}%*s[%4s] %s${cend}\n" "$LOGGER_INDENT" "" "$level" "$line"      ;;
+        esac
+    done < <( (( $# )) && printf "%s\n" "$@" || cat )
 }
 
 
-function iprintf() {
-    local format=$1 && shift
-    local count=$(( $# / 2 ))
-    local argv=( "$@" )
-    local args=()
-    local i
+function logger-push() {
+    local count=${1-1}
 
-    # Call printf with its arguments interleaved.
+    (( LOGGER_INDENT += 2 * count )) || :
+}
 
-    for (( i=0; i < count; i++ )); do
-        args+=( "${argv[i]}" "${argv[i+count]}" )
-    done
 
-    printf -- "$format" "${args[@]}"
+function logger-pop() {
+    local count=${1-1}
+
+    (( LOGGER_INDENT -= 2 * count )) || :
+}
+
+
+function max() {
+    local value=$1
+
+    if (( "$2" > "$1" )); then
+        value=$2
+    fi
+
+    printf "%s" "$value"
 }
 
 
