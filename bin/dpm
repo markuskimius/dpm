@@ -1878,9 +1878,6 @@ function depfile-open() {
     local pkgname=$1
     local depfile="${PKGDIR}/${pkgname}/etc/dpm-deps"
 
-    # Skip if already open
-    [[ "$LAST_DEPFILE" == "$depfile" ]] && return
-
     # Initialize
     DEPFILE_PKGNAME=()
     DEPFILE_SOURCES=()
