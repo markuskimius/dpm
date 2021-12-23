@@ -41,6 +41,10 @@ COMMAND:
 
   list [-l,--long]      List installed packages.
 
+  deps [PKGNAME]        Show the dependency tree of PKGNAME.  If PKGNAME is
+                        omitted, the dependency tree of all packages is
+                        displayed.
+
   setup                 eval this output to setup BASH.  The output contains
                         the script to setup DPM core as well as the script to
                         setup any active package.
@@ -97,6 +101,7 @@ function main() {
         recover)    shift && action=( dpm-recover      ) ;;
         cleanup)    shift && action=( dpm-cleanup      ) ;;
         list)       shift && action=( dpm-list         ) ;;
+        deps)       shift && action=( dpm-deps         ) ;;
         setup)      shift && action=( dpm-setup        ) ;;
         activate)   shift && action=( dpm-activate     ) ;;
         deactivate) shift && action=( dpm-deactivate   ) ;;
@@ -1152,6 +1157,82 @@ function dpm-list() {
             printf "$format" "${row[@]}"
         done
     fi
+}
+
+
+##############################################################################
+# DEPENDENCIES
+
+function dpm-deps() {
+    local pkgname
+    local isok=1
+
+    # Show dependency of all packages if none specified
+    if (( $# == 0 )); then
+        set -- $(installed)
+    fi
+
+    # Validate arguments
+    (( $# == 0 )) && logger FAIL "No package specified" && return 1
+
+    # Do my thing
+    for pkgname in "$@"; do
+        local leader
+        local lnum=0
+        local line
+
+        # Validate package
+        ! pkg-isinstalled "$pkgname" && logger FAIL "${pkgname}: Invalid PKGNAME" && isok=0 && break
+
+        # Show the dependency tree of the package
+        while IFS= read -r line; do
+            if (( lnum == 0 )); then
+                leader="* "
+            else
+                leader="  "
+            fi
+
+            printf "%s%s\n" "$leader" "$line"
+            (( lnum+=1 ))
+        done < <(deps-tree "$pkgname") || isok=0
+    done
+
+    (( isok ))
+}
+
+
+function deps-tree() {
+    local pkgname=$1
+    local deps=()
+    local i
+
+    # Get dependency information
+    depfile-open "$pkgname"
+    deps=( $(depfile-pkgnames) )
+
+    # This node
+    printf "%s\n" "$pkgname"
+
+    # Child nodes
+    for (( i=0; i < ${#deps[@]}; i++ )); do
+        local depname=${deps[i]}
+        local leader
+        local lnum=0
+        local line
+
+        while IFS= read -r line; do
+            if (( lnum == 0 )); then
+                leader="+-- "
+            elif (( i < ${#deps[@]}-1 )); then
+                leader="|   "
+            else
+                leader="    "
+            fi
+
+            printf "%s%s\n" "$leader" "$line"
+            (( lnum+=1 ))
+        done < <(deps-tree "$depname")
+    done
 }
 
 
