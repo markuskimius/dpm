@@ -2086,8 +2086,8 @@ function depfile-seek() {
 
         for (( i=0; i < ${#DEPFILE_PKGNAME[@]}; i++ )); do
             if [[ "${DEPFILE_PKGNAME[i]}" == "$pkgname" ]]; then
+                read -d '' -ra LAST_DEPFILE_SOURCES <<<"${DEPFILE_SOURCES[i]}"
                 LAST_DEPFILE_PKGNAME=$pkgname
-                LAST_DEPFILE_SOURCES=( ${DEPFILE_SOURCES[i]} )
                 LAST_DEPFILE_INDEX=$i
                 break
             fi
@@ -2103,7 +2103,7 @@ function depfile-get() {
 
     case "$name" in
         PKGNAME)  printf "%s" "${DEPFILE_PKGNAME[LAST_DEPFILE_INDEX]}" ;;
-        SOURCES)  printf "%s" "${DEPFILE_SOURCES[LAST_DEPFILE_INDEX]}" ;;
+        SOURCES)  printf "%s" "${LAST_DEPFILE_SOURCES[*]}"             ;;
               *)  logger FAIL "${name}: Invalid depfile column"
                   false
     esac

@@ -119,13 +119,23 @@ A package may include its package dependency information in `etc/dpm-deps`.
 This is a pipe-separated text file in the following format:
 
 ```
-PKGNAME|URL|BRANCH
+DEPNAME|URL1 BRANCH1 [URL2 BRANCH2] [URL3 BRANCH3] [...]
 ```
 
-`BRANCH` is optional.  If not set, the default branch is pulled.
+`DEPNAME` is the package name of the dependency.  This name also serves as the
+name of the subdirectory under `$DPM` which the package is installed.
 
-If you don't have write access to PKG1 that depends on PKG2, you can create a
-meta-package PKG0 that depends on PKG1 and PKG2, and install PKG0.
+When `DEPNAME` is installed, it is installed from `URL1` branch `BRANCH1.  The
+remaining URL and branch names, if supplied, are other acceptable sources from
+where `DEPNAME` could also be installed.  If any branch from the URL is
+acceptable, it may be ommitted (if it is the last branch) or `*` may be used as
+its placeholder.  This information is used when installing `DEPNAME` to test,
+if the system already has a package named `DEPNAME` installed, whether the
+already installed copy is a compatible package or another package that happens
+to be named `DEPNAME`.
+
+If you don't have a write access to PKG1 that depends on PKG2, you can create a
+metapackage PKG0 that depends on PKG1 and PKG2, and install PKG0.
 
 
 ## Configuration
