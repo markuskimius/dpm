@@ -783,7 +783,7 @@ function update-by-pkgname() {
     local handler
     local predeps=()
     local postdeps=()
-    local numrefs maxheight
+    local numrefs oldheight newheight
 
     # Validate arguments
     handler=$(pkg-gethandler "$pkgname") || return 1
@@ -800,13 +800,14 @@ function update-by-pkgname() {
     # Get the number of references and height before the update
     instfile-seek "$pkgname"
     numrefs=$(instfile-get NUMREF)
-    maxheight=$(instfile-get HEIGHT)
+    oldheight=$(instfile-get HEIGHT)
+    newheight=$oldheight
 
     # Update the package
     "${handler}-update" "$pkgname" 2>&1 | logger "${handler}" || isok=0
 
     if (( isok )); then
-        local depname depurl depbranch depsources
+        local depname depurl depbranch depsources depheight
 
         # Get the list of dependencies after update
         if depfile-open "$pkgname"; then
@@ -828,7 +829,8 @@ function update-by-pkgname() {
 
                 # Did the height increase?
                 instfile-seek "$depfile"
-                maxheight=$(max "$maxheight" "$(instfile-get HEIGHT)")
+                depheight=$(instfile-get HEIGHT)
+                newheight=$(max "$newheight" "$((depheight+1))")
             fi
 
             (( isok )) || break
@@ -858,15 +860,17 @@ function update-by-pkgname() {
 
             if (( isok )); then
                 # Update the height
-                instfile-seek "$pkgname"
-                instfile-set HEIGHT "$maxheight"
-                instfile-save || isok=0
+                if (( oldheight != newheight )); then
+                    incheight-by-pkgname -r "$pkgname" "$newheight"
+                fi || isok=0
 
                 if (( isok )); then
                     # Success!
                     logger OK "${pkgname}: UPDATED"
                     return 0
                 fi
+
+                # ;&
             fi
 
             # ;&
@@ -1385,6 +1389,67 @@ function decref-by-pkgname() {
 
 
 ##############################################################################
+# HEIGHT
+
+function incheight-by-pkgname() {
+    local OPTIND OPTERR OPTARG opt
+    local pkgname minheight
+    local recursive=0
+    local isok=1
+
+    # Check arguments
+    while getopts "n:r" opt; do
+        case "$opt" in
+            r)  recursive=1 ;;
+        esac
+    done
+    shift $((OPTIND-1))
+
+    # Optionless arguments
+    pkgname=$1
+    minheight=$2
+
+    # Increment my height
+    logger INFO "${pkgname}: Update height..."
+    instfile-seek "$pkgname"
+    instfile-set HEIGHT "$minheight"
+    instfile-save || isok=0
+
+    if (( isok )); then
+        if (( recursive )); then
+            local refname
+            local refheight
+
+            for refname in $(installed-by-depname "$pkgname"); do
+                instfile-seek "$refname"
+                refheight=$(instfile-get HEIGHT)
+
+                # Increase the height of the package that depends on this
+                # package if it's no higher than this package's height.
+                if (( refheight < (minheight+1) )); then
+                    logger-push
+                    incheight-by-pkgname "$refname" "$((minheight+1))"
+                    logger-pop
+                fi || isok=0
+
+                # ;&
+            done
+        fi
+
+        # Success!
+        if (( isok )); then
+            return 0
+        fi
+
+        # ;&
+    fi
+
+    # Failed!
+    return 1
+}
+
+
+##############################################################################
 # URL
 
 function url-gethandler() {
@@ -1502,6 +1567,33 @@ function installed() {
             local pkgname=$(basename "$pkgpath")
 
             installed+=( "$pkgname" )
+        fi
+    done
+
+    printf "%s" "${installed[*]}"
+}
+
+
+function installed-by-depname() {
+    local depname=$1
+    local installed=()
+    local pkgname
+    local line
+
+    #
+    # Any installed package matching '^depname|' in etc/dpm-deps is assumed to
+    # depend on depname
+    #
+    for pkgname in $(installed); do
+        local depfile="${PKGDIR}/${pkgname}/etc/dpm-deps"
+
+        if [[ -r "$depfile" ]]; then
+            while IFS= read -r line; do
+                if [[ "$line" == "${depname}|"* ]]; then
+                    installed+=( "$pkgname" )
+                    break
+                fi
+            done < "$depfile"
         fi
     done
 
