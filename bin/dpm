@@ -385,6 +385,7 @@ function install-by-url() {
     # Sanity check
     handler=$(url-gethandler "$url") || return 1
     ! command -v "${handler}-install" >&/dev/null && logger FAIL "${handler}-install missing" && return 1
+    ! [[ "$pkgname" =~ ^[-_A-Za-z0-9]+$ ]] && logger FAIL "${pkgname}: Invalid package name" && return 1
 
     # Notification
     [[ -z "$branch" ]] && unset branch
