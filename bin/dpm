@@ -823,17 +823,18 @@ function update-by-pkgname() {
         for depname in "${postdeps[@]}"; do
             if [[ " ${predeps[*]} " != *" $depname "* ]]; then
                 depfile-open "$pkgname"
+                depfile-seek "$depname"
                 depurl=$(depfile-geturl)
-                depbranch=$(depfile-geturl)
+                depbranch=$(depfile-getbranch)
                 depsources=$(depfile-get SOURCES)
 
-                logger INFO "${pkgname}: Now requires '${depname}':"
+                logger INFO "${pkgname}: Now requires '${depname}' from $depurl branch $depbranch:"
                 logger-push
                 install-or-incref -r "$depname" "$depurl" "$depbranch" "$depsources" || isok=0
                 logger-pop
 
                 # Did the height increase?
-                instfile-seek "$depfile"
+                instfile-seek "$depname"
                 depheight=$(instfile-get HEIGHT)
                 newheight=$(max "$newheight" "$((depheight+1))")
             fi
@@ -847,7 +848,7 @@ function update-by-pkgname() {
                 if [[ " ${postdeps[*]} " != *" $depname "* ]]; then
                     logger INFO "${pkgname}: No longer requires '${depname}':"
                     logger-push
-                    decref-by-pkgname -n "$numrefs" -r "$depname" || isok=0
+                    decref-by-pkgname -r "$depname" || isok=0
                     logger-pop
 
                     # We don't care if the height decreased since the height is
@@ -1479,7 +1480,7 @@ function incheight-by-pkgname() {
     local isok=1
 
     # Check arguments
-    while getopts "n:r" opt; do
+    while getopts "r" opt; do
         case "$opt" in
             r)  recursive=1 ;;
         esac
@@ -1509,7 +1510,7 @@ function incheight-by-pkgname() {
                 # package if it's no higher than this package's height.
                 if (( refheight < (minheight+1) )); then
                     logger-push
-                    incheight-by-pkgname "$refname" "$((minheight+1))"
+                    incheight-by-pkgname -r "$refname" "$((minheight+1))"
                     logger-pop
                 fi || isok=0
 
