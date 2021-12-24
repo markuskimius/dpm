@@ -63,7 +63,8 @@ $
 
 - `PACKAGE` is the name of the local repository.
   It is the name of the physical directory underneath `$DPM`.
-- `NUMREF` is the number of packages that reference (depend on) this package.
+- `NUMREF` is the number of times the package is referended by a direct
+  installed package.
   This number may be decremented by the `remove` operation.
   The package is not physically removed until this number hits 0.
 - `HEIGHT` is how many "levels" of dependencies the package has underneath it,

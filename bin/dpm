@@ -42,8 +42,8 @@ COMMAND:
   list [-l,--long]      List installed packages.
 
   deps [PKGNAME]        Show the dependency tree of PKGNAME.  If PKGNAME is
-                        omitted, the dependency tree of all packages is
-                        displayed.
+                        omitted, the dependency tree of all direct installed
+                        packages is displayed.
 
   setup                 eval this output to setup BASH.  The output contains
                         the script to setup DPM core as well as the script to
@@ -788,7 +788,7 @@ function update-by-pkgname() {
     local handler
     local predeps=()
     local postdeps=()
-    local numrefs oldheight newheight
+    local oldheight newheight
 
     # Validate arguments
     handler=$(pkg-gethandler "$pkgname") || return 1
@@ -802,9 +802,8 @@ function update-by-pkgname() {
         predeps=( $(depfile-pkgnames) )
     fi
 
-    # Get the number of references and height before the update
+    # Get the height before the update
     instfile-seek "$pkgname"
-    numrefs=$(instfile-get NUMREF)
     oldheight=$(instfile-get HEIGHT)
     newheight=$oldheight
 
@@ -829,7 +828,7 @@ function update-by-pkgname() {
 
                 logger INFO "${pkgname}: Now requires '${depname}':"
                 logger-push
-                install-or-incref -n "$numrefs" -r "$depname" "$depurl" "$depbranch" "$depsources" || isok=0
+                install-or-incref -r "$depname" "$depurl" "$depbranch" "$depsources" || isok=0
                 logger-pop
 
                 # Did the height increase?
@@ -1169,7 +1168,7 @@ function dpm-deps() {
 
     # Show dependency of all packages if none specified
     if (( $# == 0 )); then
-        set -- $(installed)
+        set -- $(instfile-direct)
     fi
 
     # Validate arguments
