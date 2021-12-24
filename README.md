@@ -125,7 +125,7 @@ DEPNAME|URL1 BRANCH1 [URL2 BRANCH2] [URL3 BRANCH3] [...]
 `DEPNAME` is the package name of the dependency.  This name also serves as the
 name of the subdirectory under `$DPM` which the package is installed.
 
-When `DEPNAME` is installed, it is installed from `URL1` branch `BRANCH1.  The
+When `DEPNAME` is installed, it is installed from `URL1` branch `BRANCH1`.  The
 remaining URL and branch names, if supplied, are other acceptable sources from
 where `DEPNAME` could also be installed.  If any branch from the URL is
 acceptable, it may be ommitted (if it is the last branch) or `*` may be used as
