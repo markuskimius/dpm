@@ -825,10 +825,10 @@ function update-by-pkgname() {
                 depfile-open "$pkgname"
                 depfile-seek "$depname"
                 depurl=$(depfile-geturl)
-                depbranch=$(depfile-getbranch)
+                depbranch=$(depfile-getbranch) && [[ -z "$depbranch" ]] && unset depbranch
                 depsources=$(depfile-get SOURCES)
 
-                logger INFO "${pkgname}: Now requires '${depname}' from $depurl branch $depbranch:"
+                logger INFO "${pkgname}: Now requires '${depname}' from ${depurl}${depbranch+ branch }${depbranch-}:"
                 logger-push
                 install-or-incref -r "$depname" "$depurl" "$depbranch" "$depsources" || isok=0
                 logger-pop
