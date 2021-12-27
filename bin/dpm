@@ -624,10 +624,22 @@ function remove-by-pkgname() {
         "${handler}-remove" "$pkgname" 2>&1 | logger "${handler}" || isok=0
 
         if (( isok )); then
+            local flags
+
+            # Remember the flags before removing the installation record
+            instfile-seek "$pkgname"
+            flags=$(instfile-get FLAGS)
+
             # Remove the installation record
             logger INFO "${pkgname}: Remove the installation record..."
             instfile-rmrec "$pkgname"
             instfile-save || isok=0
+
+            # If we removed an active package, regenerate the active file
+            if [[ "$flags" == *A* ]]; then
+                logger WARN "${pkgname}: Deactivated"
+                active-save
+            fi
 
             if (( isok )); then
                 # Success!
@@ -733,17 +745,29 @@ function dpm-rename() {
         instfile-save || isok=0
 
         if (( isok )); then
-            # Success!
-            logger OK "SUCCESS: Renamed ${pkgname1} to ${pkgname2}"
-            return 0
+            # Update the active record
+            if [[ "$(instfile-get FLAGS)" == *A* ]]; then
+                logger INFO "${pkgname1}: Rename the active record to ${pkgname2}..."
+                active-save || isok=0
+            fi
+
+            if (( isok )); then
+                # Success!
+                logger OK "SUCCESS: Renamed ${pkgname1} to ${pkgname2}"
+                return 0
+            fi
+
+            # Revert the installation record
+            instfile-mvrec "$pkgname2" "$pkgname1"
+            instfile-save
         fi
 
-        # Failed!
-        logger INFO "FAILED to rename, revert..."
+        # Revert the directory move
         mv -f "${PKGDIR}/${pkgname2}" "${PKGDIR}/${pkgname1}"
     fi
 
     # Failed!
+    logger FAIL "FAILED to rename"
     return 1
 }
 
@@ -926,9 +950,17 @@ function dpm-recover() {
         done
 
         if (( isok )); then
-            # Success!
-            logger OK "SUCCESS: Recovered"
-            return 0
+            # Update the active file
+            logger INFO "Recover the active file..."
+            active-save || isok=0
+
+            if (( isok )); then
+                # Success!
+                logger OK "SUCCESS: Recovered"
+                return 0
+            fi
+
+            # ;&
         fi
 
         # Restore the backup install file
@@ -1453,6 +1485,12 @@ function incref-by-pkgname() {
     instfile-incref "${inverse[@]}" -n "$numrefs"
     instfile-save || isok=0
 
+    # If we lost an active package, regenerate the active file
+    if (( "$(instfile-get NUMREF)" <= 0 )) && [[ "$(instfile-get FLAGS)" == *A* ]]; then
+        logger WARN "${pkgname}: Deactivated"
+        active-save
+    fi
+
     if (( isok )); then
         local depname
 
@@ -1738,7 +1776,7 @@ function active() {
     #
 
     for (( i=0; i < ${#INSTFILE_FLAGS[@]}; i++ )); do
-        if [[ "${INSTFILE_FLAGS[i]}" == *A* ]]; then
+        if [[ "${INSTFILE_FLAGS[i]}" == *A* ]] && (( "${INSTFILE_NUMREF[i]}" > 0 )); then
             active[INSTFILE_HEIGHT[i]]+=" ${INSTFILE_PKGNAME[i]}"
         fi
     done
