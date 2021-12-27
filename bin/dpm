@@ -1726,7 +1726,7 @@ function installed() {
 
     for pkgpath in "${PKGDIR}"/*; do
         if [[ -d "$pkgpath" ]]; then
-            local pkgname=$(basename "$pkgpath")
+            local pkgname=${pkgpath##*/}
 
             installed+=( "$pkgname" )
         fi
