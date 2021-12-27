@@ -41,9 +41,10 @@ COMMAND:
 
   list [-l,--long]      List installed packages.
 
-  deps [PKGNAME]        Show the dependency tree of PKGNAME.  If PKGNAME is
-                        omitted, the dependency tree of all direct installed
-                        packages is displayed.
+  deps [PKGNAME]        Show the dependency tree of any direct installed
+                        package that directly or indirectly depends on PKGNAME.
+                        If PKGNAME is omitted, the dependency tree of all
+                        direct installed packages is displayed.
 
   setup                 eval this output to setup BASH.  The output contains
                         the script to setup DPM core as well as the script to
@@ -1166,18 +1167,31 @@ function dpm-list() {
 
 function dpm-deps() {
     local pkgname
+    local roots=()
+    local colorize=0
     local isok=1
 
-    # Show dependency of all packages if none specified
+    # Get the list of direct installed roots to output
     if (( $# == 0 )); then
-        set -- $(instfile-direct)
+        # Show dependency of all packages
+        roots=( $(instfile-direct) )
+    else
+        # Find their roots
+        for pkgname in "$@"; do
+            roots+=( $(deps-getroots "$pkgname") )
+        done
+
+        # Filter them to a unique sorted list
+        roots=( $(printf "%s\n" "${roots[@]}" | sort -u) )
     fi
 
-    # Validate arguments
-    (( $# == 0 )) && logger FAIL "No package specified" && return 1
+    # Colorize if output to terminal
+    if [[ -t 1 ]]; then
+        colorize=1
+    fi
 
     # Do my thing
-    for pkgname in "$@"; do
+    for pkgname in "${roots[@]}"; do
         local leader
         local lnum=0
         local line
@@ -1195,15 +1209,39 @@ function dpm-deps() {
 
             printf "%s%s\n" "$leader" "$line"
             (( lnum+=1 ))
-        done < <(deps-tree "$pkgname") || isok=0
+        done < <(deps-tree "$pkgname" "$colorize" "$*") || isok=0
     done
 
     (( isok ))
 }
 
 
+function deps-getroots() {
+    local pkgname=$1
+    local refname
+    local roots=()
+    local include=0
+
+    # A direct installed package is a root
+    instfile-seek "$pkgname"
+    if [[ "$(instfile-get FLAGS)" == *D* ]]; then
+        roots+=( "$pkgname" )
+    fi
+
+    # Find the roots of any package that references this package
+    for refname in $(installed-by-depname "$pkgname"); do
+        roots+=( $(deps-getroots "$refname") )
+    done
+
+    # Output
+    printf "%s\n" "${roots[@]}"
+}
+
+
 function deps-tree() {
     local pkgname=$1
+    local colorize=$2
+    local matches=$3
     local deps=()
     local i
 
@@ -1211,8 +1249,12 @@ function deps-tree() {
     depfile-open "$pkgname"
     deps=( $(depfile-pkgnames) )
 
-    # This node
-    printf "%s\n" "$pkgname"
+    # This node -- colorize matching nodes
+    if (( colorize )) && [[ " $matches " == *" $pkgname "* ]]; then
+        printf "%s\n" "$(colorize red "$pkgname")"
+    else
+        printf "%s\n" "$pkgname"
+    fi
 
     # Child nodes
     for (( i=0; i < ${#deps[@]}; i++ )); do
@@ -1232,7 +1274,7 @@ function deps-tree() {
 
             printf "%s%s\n" "$leader" "$line"
             (( lnum+=1 ))
-        done < <(deps-tree "$depname")
+        done < <(deps-tree "$depname" "$colorize" "$matches")
     done
 }
 
@@ -2318,31 +2360,25 @@ function egetopt() {
 
 function logger() {
     local level=$1 && shift
-    local cbegin="" cend=""
     local line
 
-    # Colorize
-    case "$level" in
-        OK)     [[ -t 1 ]] && cbegin="\033[1;32m" && cend="\033[0m" ;;
-        WARN)   [[ -t 2 ]] && cbegin="\033[1;33m" && cend="\033[0m" ;;
-        FAIL)   [[ -t 2 ]] && cbegin="\033[1;31m" && cend="\033[0m" ;;
-    esac
-
-    # Set width
+    # Center the level to 4 characters
     case "${#level}" in
-        1)  level="  $level " ;;
-        2)  level=" $level "  ;;
-        3)  level=" $level"   ;;
-        *)  level=${level::4} ;;
+        1)  printf -v level "  %s " "${level}" ;;
+        2)  printf -v level " %s " "${level}"  ;;
+        3)  printf -v level " %s" "${level}"   ;;
+        *)  printf -v level "%s" "${level::4}" ;;
     esac
 
-    #
     # Print arguments or stdin.
-    #
     while IFS= read -r line; do
+        printf -v line "%*s[%4s] %s\n" "$LOGGER_INDENT" "" "$level" "$line"
+
         case "$level" in
-            WARN|FAIL)  printf "${cbegin}%*s[%4s] %s${cend}\n" "$LOGGER_INDENT" "" "$level" "$line" 1>&2 ;;
-            *)          printf "${cbegin}%*s[%4s] %s${cend}\n" "$LOGGER_INDENT" "" "$level" "$line"      ;;
+            " OK ")  colorize green  "$line" 1      ;;
+            "WARN")  colorize yellow "$line" 2 1>&2 ;;
+            "FAIL")  colorize red    "$line" 2 1>&2 ;;
+            *)       printf "%s" "$line" ;;
         esac
     done < <( (( $# )) && printf "%s\n" "$@" || cat )
 }
@@ -2359,6 +2395,27 @@ function logger-pop() {
     local count=${1-1}
 
     (( LOGGER_INDENT -= 2 * count )) || :
+}
+
+
+function colorize() {
+    local color=$1
+    local text=$2
+    local fd=${3-}
+    local begin=""
+    local end=""
+
+    if [[ -z "$fd" || -t "$fd" ]]; then
+        end=$'\e[0m'
+
+        case "$color" in
+            red)    begin=$'\e[1;31m' ;;
+            green)  begin=$'\e[1;32m' ;;
+            yellow) begin=$'\e[1;33m' ;;
+        esac
+    fi
+
+    printf "%s" "${begin}${text}${end}"
 }
 
 
