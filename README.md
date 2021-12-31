@@ -17,7 +17,7 @@ For example:
 ```bash
 $ mkdir $HOME/src
 $ git -C $HOME/src clone https://github.com/markuskimius/dpm.git
-$ echo '[[ -z "$__DPM__" ]] && export __DPM__=1 && eval "$($HOME/src/dpm/bin/dpm setup)"' >> ~/.bashrc
+$ echo 'eval "$(bash --norc --noprofile "${HOME}/src/dpm/bin/dpm" setup)"' >> ~/.bashrc
 ```
 
 Note that `$HOME/dpm` is a reserved directory; do not clone `dpm` as it.
