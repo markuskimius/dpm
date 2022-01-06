@@ -1,18 +1,18 @@
 # Distributed Package Manager (DPM)
 
-## What does it do?
+DPM is a light-weight package manager for installing packages and manage their dependencies
+from one or more git servers without the need for a central repository.
 
-- Install packages directly from a git server (such as github).
-- Install dependencies automatically, if [specified](#dependency).
-- Track which package was installed directly vs. as a dependency,
-  and remove the dependencies automatically when the directly installed package
-  is uninstalled.
+Install, update, and remove packages and their dependencies across git servers with a single command.
+Dependencies are tracked and removed when all packages that dependend on it are removed.
 
+Dependencies a package requires are listed in one text file, `etc/dpm-deps`, in its git repo.
+If the package does not have this file and one cannot be added (e.g., you don't have access)
+then a meta package can be created that specifies the dependencies of the package.
 
 ## Installation
 
-Clone dpm then evaluate the output of `dpm setup` from `.bashrc`.
-For example:
+Clone `dpm` then evaluate the output of `dpm setup` from `.bashrc`:
 
 ```bash
 $ mkdir $HOME/src
@@ -20,99 +20,141 @@ $ git -C $HOME/src clone https://github.com/markuskimius/dpm.git
 $ echo 'eval "$(bash --norc --noprofile "${HOME}/src/dpm/bin/dpm" setup)"' >> ~/.bashrc
 ```
 
-Note that `$HOME/dpm` is a reserved directory; do not clone `dpm` as it.
+Then log out of the terminal session and log back in for the setup script to take effect.
 
+Please note `$HOME/dpm` is a reserved directory (that's where the git packages are cloned)
+so do not clone `dpm` in `$HOME`.
 
-## Usage
+Optionally, after the initial install of dpm, dpm can be re-installed using dpm and the original install removed:
 
-To install a package, use any of these syntaxes:
+```bash
+$ dpm install https://github.com/markuskimius/dpm.git
+$ echo 'eval "$(bash --norc --noprofile "${HOME}/dpm/dpm/bin/dpm" setup)"' >> ~/.bashrc
+$ vim ~/.bashrc    # Remove the old eval line from ~/.bashrc
+```
+
+Then log out of the terminal session and log back in for the change to take effect.
+
+## Basic Usage
+
+To install a package from, say, github, use either of these syntaxes:
 
 ```bash
 $ dpm install https://github.com/markuskimius/common.git
 $ dpm install git@github.com:markuskimius/common.git
-$ dpm install user@hostname:/path/to/git/repo/.git
 ```
 
-To update (`git pull`) the package:
+By default, the default branch is installed.
+To specify a different branch or a tag, use the `-b` option.
+
+To update:
 
 ```bash
 $ dpm update common  # Update the package named 'common'
 $ dpm update         # Updates all packages
 ```
 
-To remove the package:
+To remove:
 
 ```bash
-$ dpm remove common
+$ dpm remove common  # Remove the package named 'common',
+                     # and any of its dependencies that aren't used by another package
 ```
 
-You may need to exit then re-login to the terminal for the package changes to
-take effect in the environment (e.g., update the `$PATH`).
+You may need to log out of the terminal session
+then log in again after any of the above operations for the change to take effect.
 
+Packages are installed to `$DPM`, set to `$HOME/dpm` by default.
+This can be changed by adding the following setting to `$HOME/.dpmrc`:
 
-To list what packages are installed:
+```bash
+PKGDIR=$HOME/path/to/new/package/directory
+```
+
+When `dpm setup` is evaluated by `~/.bashrc, all installed packages' `bin` directory are added to PATH,
+`lib` directory added to PYTHONPATH and/or TCLLIBPATH on startup, as appropriate.
+Also, if a package provides `etc/bashrc` it is output to be evaluated but only if the package is "active".
+More on this later.
+
+To list the installed packages:
 
 ```bash
 $ dpm list -l
-         PACKAGE  NUMREF  HEIGHT  FLAGS  BRANCH  URL
-  --------------  ------  ------  -----  ------  ----------------------------------------------
-          common       1       2  DA     main    https://github.com/markuskimius/common.git
-       getopt-sh       1       1         master  https://github.com/markuskimius/getopt-sh.git
+          PKGNAME  NUMREF  HEIGHT  FLAGS  BRANCH           URL
+          -------  ------  ------  -----  ------           ---
+           common       2       2  AD     main             git@github.com:markuskimius/common.git
+              dpm       1       1  D      main             git@github.com:markuskimius/dpm.git
+        getopt-sh       2       1         master           git@github.com:markuskimius/getopt-sh.git
+       profile-sh       1       3  D      main             git@github.com:markuskimius/profile-sh.git
 $
 ```
 
-- `PACKAGE` is the name of the local repository.
-  It is the name of the physical directory underneath `$DPM`.
-- `NUMREF` is the number of times the package is referended by a direct
-  installed package.
-  This number may be decremented by the `remove` operation.
-  The package is not physically removed until this number hits 0.
-- `HEIGHT` is how many "levels" of dependencies the package has underneath it,
-  plus one.
-  If the package has no dependency, the height is 1.
-  If the package has 1 dependency, the height of the package is the height of
-  its dependency plus 1.
-  If the package has many dependencies, the height of the package is the
-  maximum height of its dependencies plus one.
-  The height information is used to initialize packages in the order of
-  dependency, by initializing them from the lowest height to the highest.
-- `FLAGS` may be one of:
-  - `D` for direct-installed package.
-    That is, this package was installed explicitly by the user.
-    Note that it is possible for a package to be both directly installed and is
-    also installed as a dependency of another package;
-    `NUMREF` of 1 means the package is only directly installed;
-    `NUMREF` greater than 1 means the package is also a dependency of another
-    package.
-  - `A` for "activated" package.
-    When a package is activated, its `etc/bashrc`, if it exists, is sourced
-    upon startup (it is included in the output of `dpm sourceme`).
-    Furthermore, the name of the package is added to the list of package names
-    in `$DPM/.active`, in the order of lowest height to the highest, that
-    may be read by an application to take an action only on activated packages.
-    To activate and deactive a package, use the `dpm activate` and `dpm
-    deactivate` commands, respectively.
-- `BRANCH` is the git branch of the package.
-- `URL` is the remote location of the package.
+Packages with the `D` flag were direct installed by the user.
+Those without this flag were installed as a dependency and dependency only.
 
-`URL` and `BRANCH` are read directly from the local repo.
-.
-`NUMREF`, `HEIGHT`, and `FLAGS` are read from `$DPM/.installed`.
-This file is updated when packages are installed, updated, or removed.
-If a package dependency changes locally, however, this file needs to be
-regenerated:
+Packages with the `A` flag are "activated".
+An activated package, if it supplies `etc/bashrc`, is sourced at startup
+by returning it as a part of `dpm setup` evaluated in `~/.bashrc`.
+This activation procedure is a protective measure to allow a user to install a package
+and review it before running a script it supplies.
+Active packages are also listed in a file, `$DPM/.active`
+if any package wants to get the list of packages.
+
+To activate a package, run:
+```bash
+$ dpm activate common      # common is the package name
+```
+
+NUMREF shows the number of packages that depend on this package.
+It's possible that a package was direct installed by a user *and* it is a dependency.
+A direct installed package with no other package depending on it has the `D` flag and a NUMREF of 1.
+
+HEIGHT shows the *depth* of dependencies a package has.
+A package with the height of 1 has no dependencies.
+A package with the height of 2 has one or more dependencies whose maximum height is 1.
+A package with the height of 3 has one or more dependencies whose maximum height is 2.
+This information is used by `dpm setup` to source their startup scripts in order,
+so that package A's startup script is sourced after package B's,
+if A's startup script requires that B's startup script to have run first.
+The height information is also used to generate `$DPM/.active` in the order of lowest to heighest height.
+
+To see the actual dependencies of a package, `dpm deps` can be used.
+The following command shows any package that depends on the `getopt-sh` package:
+
+```bash
+$ dpm deps getopt-sh
+* common
+  +-- getopt-sh
+* profile-sh
+  +-- common
+      +-- getopt-sh
+```
+
+The number of times the package appears in the output should match its NUMREF.
+The maximum depth of dependencies a package has, including itself, should match its HEIGHT.
+
+NUMREF, HEIGHT, and FLAGS of a package are saved in `$DPM/.installed`.
+If this running value ever goes out of sync
+(which can occur if the package dependencies are manually edited locally)
+the file can be regenerated as follows:
 
 ```bash
 $ dpm recover
 ```
 
-After the installation file is regenerated, some packages may have a `NUMREF` of 0.
-After confirming, the packages can be removed:
+If this or any other command, except `dpm remove`, detects that a package can be removed
+it won't actually remove it but simply show a NUMREF of 0.
+To remove all packages with NUMREF of 0, use the following command:
 
 ```bash
 $ dpm cleanup
 ```
 
+To keep a package with NUMREF of 0 from being removed, direct-install it:
+
+```
+$ dpm install common   # no need to specify URL if the package exists locally
+```
 
 ## Dependency
 
@@ -126,40 +168,25 @@ DEPNAME|URL1 BRANCH1 [URL2 BRANCH2] [URL3 BRANCH3] [...]
 `DEPNAME` is the package name of the dependency.  This name also serves as the
 name of the subdirectory under `$DPM` which the package is installed.
 
-When `DEPNAME` is installed, it is installed from `URL1` branch `BRANCH1`.  The
-remaining URL and branch names, if supplied, are other acceptable sources from
-where `DEPNAME` could also be installed.  If any branch from the URL is
-acceptable, it may be ommitted (if it is the last branch) or `*` may be used as
-its placeholder.  This information is used when installing `DEPNAME` to test,
-if the system already has a package named `DEPNAME` installed, whether the
-already installed copy is a compatible package or another package that happens
-to be named `DEPNAME`.
+`DEPNAME` is installed from `URL1` branch `BRANCH1`.
+`BRANCH1` may be `*` to indicate the default branch,
+or may be omitted if it is the last item in the field.
 
-If you don't have a write access to PKG1 that depends on PKG2, you can create a
-metapackage PKG0 that depends on PKG1 and PKG2, and install PKG0.
+If `DEPNAME` is already installed,
+the URL and BRANCH of the installed package is tested against all URL and BRANCH listed on the field.
+If the installed package's URL and BRANCH is listed,
+it is assumed to be a compatible package.
+Otherwise it is assumed to be an incompatible package whose name happens to be identical
+as the dependency required by the package and will result in an error.
 
+## Meta Package
 
-## Configuration
+If a package does not provide the dpm dependency file and one cannot be added,
+a meta package can be created.
 
-The value of `$DPM` can be changed by setting `PKGDIR` in one of the following
-files:
-
-```
-$HOME/.dpmrc
-/usr/local/etc/dpmrc
-/usr/etc/dpmrc
-/etc/dpmrc
-```
-Only the first file found is loaded.
-
-Example:
-
-```bash
-PKGDIR=$HOME/opt
-```
-
-The syntax is in BASH, so there can be no whitespace around `=`.
-
+Simply create an otherwise empty package with one file, `etc/dpm-deps`,
+that lists the package and its dependencies.
+Installing this meta package will install all required packages.
 
 ## License
 
