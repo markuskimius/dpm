@@ -71,7 +71,7 @@ This can be changed by adding the following setting to `$HOME/.dpmrc`:
 PKGDIR=$HOME/path/to/new/package/directory
 ```
 
-When `dpm setup` is evaluated by `~/.bashrc, all installed packages' `bin` directory are added to PATH,
+When `dpm setup` is evaluated by `~/.bashrc`, all installed packages' `bin` directory are added to PATH,
 `lib` directory added to PYTHONPATH and/or TCLLIBPATH on startup, as appropriate.
 Also, if a package provides `etc/bashrc` it is output to be evaluated but only if the package is "active".
 More on this later.
