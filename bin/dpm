@@ -69,7 +69,7 @@ SCRIPTPATH=$0
 SCRIPTARGV=( "$@" )
 PKGDIR=${DPM-${HOME}/dpm}
 HANDLERS=( git )
-LOCK=1
+LOCK=0
 CONFIGS=(
     ~/.dpmrc
     /usr/local/etc/dpmrc
@@ -84,10 +84,11 @@ function main() {
     local isok=1
 
     # Check arguments
-    while getopts "p:n" opt; do
+    while getopts "p:nL" opt; do
         case "$opt" in
             p)  PKGDIR=$OPTARG ;;
             n)  LOCK=0         ;;
+            L)  LOCK=1         ;;
             *)  isok=0         ;;
         esac
     done
