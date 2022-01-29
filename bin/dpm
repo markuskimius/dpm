@@ -980,6 +980,7 @@ function recover-by-pkgname() {
     local visited=""
     local depname depurl depbranch
     local recovered=()
+    local isinstalled=1
     local maxheight=0
     local isok=1
 
@@ -1001,6 +1002,7 @@ function recover-by-pkgname() {
     fi
     if ! pkg-isinstalled "$pkgname"; then
         logger WARN "${pkgname}: Missing package, ignored"
+        isinstalled=0
         # ;&
     fi
 
@@ -1043,7 +1045,9 @@ function recover-by-pkgname() {
         # Recover the height and the reference counter
         instfile-seek "$pkgname"
         instfile-set HEIGHT $((maxheight + 1))
-        instfile-incref
+        if (( isinstalled )); then
+            instfile-incref
+        fi
         instfile-save || isok=0
 
         if (( isok )); then
