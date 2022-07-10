@@ -68,7 +68,7 @@ SCRIPTNAME=$(basename -- "$0")
 SCRIPTPATH=$0
 SCRIPTARGV=( "$@" )
 PKGDIR=${DPM-${HOME}/dpm}
-HANDLERS=( git )
+HANDLERS=( git local )
 LOCK=0
 CONFIGS=(
     ~/.dpmrc
@@ -2364,6 +2364,85 @@ function git-getbranch() {
     local pkgpath="${PKGDIR}/${pkgname}"
 
     git -C "$pkgpath" branch 2>/dev/null | awk '/^[*]/ { print $2 }'
+}
+
+
+##############################################################################
+# LOCAL HANDLERS
+
+function local-testdeps() {
+    local isok=1
+
+    (( isok ))
+}
+
+
+function local-testurl() {
+    local url=$1
+
+    [[ "$url" == *.dpmlocal ]]
+}
+
+
+function local-testpkg() {
+    local pkgname=$1
+    local pkgpath="${PKGDIR}/${pkgname}"
+
+    [[ -e "${pkgpath}/.dpmlocal" ]]
+}
+
+
+function local-urlpkg() {
+    local url=$1
+
+    # URL may be in the format <project>.dpmlocal or <project>/.dpmlocal
+    if [[ "$url" == */.dpmlocal ]]; then
+        url=$(dirname "$url")
+    fi
+
+    basename "$url" .dpmlocal
+}
+
+
+function local-install() {
+    local url=$1 pkgname=$2 branch=${3-}
+
+    logger INFO "${pkgname}: Local package, nothing to install."
+}
+
+
+function local-remove() {
+    local pkgname=$1
+    local pkgpath="${PKGDIR}/${pkgname}"
+    local isok=1
+
+    # Remove the repository
+    rm -rf "$pkgpath" || isok=0
+
+    (( isok ))
+}
+
+
+function local-update() {
+    local pkgname=$1
+
+    logger INFO "${pkgname}: Local package, nothing to update."
+}
+
+
+function local-geturl() {
+    local pkgname=$1
+    local pkgpath="${PKGDIR}/${pkgname}"
+
+    printf "%s" "${pkgpath}/.dpmlocal"
+}
+
+
+function local-getbranch() {
+    local pkgname=$1
+    local pkgpath="${PKGDIR}/${pkgname}"
+
+    printf "%s" "-"
 }
 
 
