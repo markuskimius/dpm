@@ -68,7 +68,7 @@ SCRIPTNAME=$(basename -- "$0")
 SCRIPTPATH=$0
 SCRIPTARGV=( "$@" )
 PKGDIR=${DPM-${HOME}/dpm}
-HANDLERS=( git local )
+HANDLERS=( git pip local )
 LOCK=0
 CONFIGS=(
     ~/.dpmrc
@@ -2364,6 +2364,157 @@ function git-getbranch() {
     local pkgpath="${PKGDIR}/${pkgname}"
 
     git -C "$pkgpath" branch 2>/dev/null | awk '/^[*]/ { print $2 }'
+}
+
+
+##############################################################################
+# PIP HANDLERS
+
+# Print the pip command
+function pip--command() {
+    command -v pip3 || command -v pip
+}
+
+
+# Execute a pip command
+function pip--exec() {
+    "$(pip--command)" "$@"
+}
+
+
+# Convert dpmpkg to pippkg
+function pip--pippkg() {
+    local dpmpkg=$1
+    local url=$(pip-geturl "$dpmpkg")
+
+    pip-urlpkg "$url"
+}
+
+
+# True if a pippkg is installed
+function pip--installed() {
+    local pippkg=$1
+
+    pip--exec show "$pippkg" &>/dev/null
+}
+
+
+# True if pip dependencies are installed, false otherwise.
+function pip-testdeps() {
+    local isok=1
+
+    # Check for pip
+    if ! pip--command >/dev/null; then
+        logger FAIL "Please install 'pip'"
+        isok=0
+    fi
+
+    (( isok ))
+}
+
+
+# Test whether the url is to a pip package
+function pip-testurl() {
+    local url=$1
+
+    [[ "$url" == *.pip ]]
+}
+
+
+# Test whether a dpmpkg is a pip package
+function pip-testpkg() {
+    local dpmpkg=$1
+    local pkgpath="${PKGDIR}/${dpmpkg}"
+
+    [[ -f "${pkgpath}/.dpm/pip" ]]
+}
+
+
+# Print default dpmpkg of a pipurl
+function pip-urlpkg() {
+    local url=$1
+
+    basename "$url" .pip
+}
+
+
+# Install the pippkg given its pipurl
+function pip-install() {
+    local url=$1 dpmpkg=$2 version=${3-}
+    local pkgpath="${PKGDIR}/${dpmpkg}"
+    local pippkg=$(pip-urlpkg "$url")
+
+    # Suffix version
+    [[ -n "$version" ]] && pippkg="${pippkg}==${version}"
+
+    # Install
+    ! pip--installed "$pippkg"      \
+    && pip--exec install "$pippkg"
+
+    # Create the meta package
+    pip--installed "$pippkg"        \
+    && mkdir -p "$pkgpath/.dpm"     \
+    && printf "%s\n%s\n" "$url" "$version" > "$pkgpath/.dpm/pip"
+}
+
+
+function pip-remove() {
+    local dpmpkg=$1
+    local pkgpath="${PKGDIR}/${dpmpkg}"
+    local pippkg=$(pip--pippkg "$dpmpkg")
+    local isok=1
+
+    # Uninstall
+    pip--installed "$pippkg"        \
+    && pip--exec uninstall -y "$pippkg"
+
+    # Remove the repository
+    ! pip--installed "$pippkg"      \
+    && rm -rf "$pkgpath" || isok=0
+
+    (( isok ))
+}
+
+
+function pip-update() {
+    local dpmpkg=$1
+    local pippkg=$(pip-urlpkg "$url")
+
+    logger INFO "${dpmpkg}: Local package, nothing to update."
+}
+
+
+function pip-geturl() {
+    local dpmpkg=$1
+    local pkgpath="${PKGDIR}/${dpmpkg}"
+    local lines=()
+
+    IFS=$'\n' read -d '' -ra lines < "${pkgpath}/.dpm/pip"
+
+    printf "%s" "${lines[0]}"
+}
+
+
+function pip-getbranch() {
+    local dpmpkg=$1
+    local pkgpath="${PKGDIR}/${dpmpkg}"
+    local pippkg=$(pip--pippkg "$dpmpkg")
+    local lines=()
+    local version
+
+    # Get the version that's supposed to be installed
+    IFS=$'\n' read -d '' -ra lines < "${pkgpath}/.dpm/pip"
+    version=${lines[1]}
+
+    # Get the version that's actually installed
+    while IFS= read -r line; do
+        if [[ "$line" == "Version: "* ]]; then
+            version=${line##* }
+            break
+        fi
+    done < <(pip--exec show "$pippkg" 2>/dev/null)
+
+    printf "%s" "$version"
 }
 
 
