@@ -2480,7 +2480,7 @@ function pip-update() {
     local dpmpkg=$1
     local pippkg=$(pip-urlpkg "$url")
 
-    logger INFO "${dpmpkg}: Local package, nothing to update."
+    logger INFO "${dpmpkg}: Pip package, please use pip to update."
 }
 
 
