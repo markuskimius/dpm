@@ -10,6 +10,8 @@
 ##############################################################################
 
 function usage() {
+    SCRIPTNAME=$(basename -- "$0")
+
     cat <<EOF
 Usage: ${SCRIPTNAME} COMMAND [ARGUMENTS]
 
@@ -64,7 +66,6 @@ EOF
 ##############################################################################
 # PROGRAM BEGINS HERE
 
-SCRIPTNAME=$(basename -- "$0")
 SCRIPTPATH=$0
 SCRIPTARGV=( "$@" )
 PKGDIR=${DPM-${HOME}/dpm}
@@ -1330,7 +1331,7 @@ function dpm-setup() {
     (( $# )) && logger FAIL "Too many arguments" && return 1
 
     # DPM core
-    cat <<EOF
+    cat-sh <<EOF
 ##############################################################################
 # DPM CORE
 ##############################################################################
@@ -1351,7 +1352,7 @@ EOF
 
     # Active packages
     for pkgname in $(active); do
-        cat <<EOF
+        cat-sh <<EOF
 
 ##############################################################################
 # PACKAGE: $pkgname
@@ -1711,7 +1712,7 @@ function pkg-setup() {
             continue
         fi
 
-        [[ -r "$bashrc" ]] && cat "$bashrc" || isok=0
+        [[ -r "$bashrc" ]] && cat-sh "$bashrc" || isok=0
     done
 
     (( isok ))
@@ -2303,10 +2304,10 @@ function git-urlpkg() {
 
     # URLs that don't support <project>.git format can be cloned as <project>/.git
     if [[ "$url" == */.git ]]; then
-        url=$(dirname "$url")
+        url=$(dirname-sh "$url")
     fi
 
-    basename "$url" .git
+    basename-sh "$url" .git
 }
 
 
@@ -2434,7 +2435,7 @@ function pip-testpkg() {
 function pip-urlpkg() {
     local url=$1
 
-    basename "$url" .pip
+    basename-sh "$url" .pip
 }
 
 
@@ -2501,6 +2502,7 @@ function pip-getbranch() {
     local pippkg=$(pip--pippkg "$dpmpkg")
     local lines=()
     local version
+    local line
 
     # Get the version that's supposed to be installed
     IFS=$'\n' read -d '' -ra lines < "${pkgpath}/.dpm/pip"
@@ -2548,10 +2550,10 @@ function local-urlpkg() {
 
     # URL may be in the format <project>.dpmlocal or <project>/.dpmlocal
     if [[ "$url" == */.dpmlocal ]]; then
-        url=$(dirname "$url")
+        url=$(dirname-sh "$url")
     fi
 
-    basename "$url" .dpmlocal
+    basename-sh "$url" .dpmlocal
 }
 
 
@@ -2653,7 +2655,7 @@ function logger() {
             "FAIL")  colorize red    "$line" 2 1>&2 ;;
             *)       printf "%s" "$line" ;;
         esac
-    done < <( (( $# )) && printf "%s\n" "$@" || cat )
+    done < <( (( $# )) && printf "%s\n" "$@" || cat-sh )
 }
 
 
@@ -2700,6 +2702,33 @@ function max() {
     fi
 
     printf "%s" "$value"
+}
+
+function dirname-sh() {
+    local fullname=$1
+
+    printf "%s\n" "${fullname%/*}"
+}
+
+function basename-sh() {
+    local fullname=$1
+    local suffix=$2
+    local basename
+
+    basename=${fullname##*/}
+    basename=${fullname%${suffix}}
+
+    printf "%s\n" "$basename"
+}
+
+function cat-sh() {
+    local file=$1
+
+    if [[ -z "$file" ]]; then
+        file=/dev/stdin
+    fi
+
+    printf "%s\n" "$(< "$file")"
 }
 
 
