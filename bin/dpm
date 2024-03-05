@@ -2716,7 +2716,7 @@ function basename-sh() {
     local basename
 
     basename=${fullname##*/}
-    basename=${fullname%${suffix}}
+    basename=${basename%${suffix}}
 
     printf "%s\n" "$basename"
 }
