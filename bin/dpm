@@ -2295,7 +2295,7 @@ function git-testpkg() {
     local pkgname=$1
     local pkgpath="${PKGDIR}/${pkgname}"
 
-    [[ -d "${pkgpath}/.git" ]]
+    git -C "${pkgpath}" remote get-url origin &> /dev/null
 }
 
 
