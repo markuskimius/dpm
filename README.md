@@ -40,8 +40,8 @@ Then log out of the terminal session and log back in for the change to take effe
 To install a package from, say, github, use either of these syntaxes:
 
 ```bash
-$ dpm install https://github.com/markuskimius/common.git
-$ dpm install git@github.com:markuskimius/common.git
+$ dpm install https://github.com/markuskimius/core.git
+$ dpm install git@github.com:markuskimius/core.git
 ```
 
 By default, the default branch is installed.
@@ -50,14 +50,14 @@ To specify a different branch or a tag, use the `-b` option.
 To update:
 
 ```bash
-$ dpm update common  # Update the package named 'common'
+$ dpm update core    # Update the package named 'core'
 $ dpm update         # Updates all packages
 ```
 
 To remove:
 
 ```bash
-$ dpm remove common  # Remove the package named 'common',
+$ dpm remove core    # Remove the package named 'core',
                      # and any of its dependencies that aren't used by another package
 ```
 
@@ -82,7 +82,7 @@ To list the installed packages:
 $ dpm list -l
           PKGNAME  NUMREF  HEIGHT  FLAGS  BRANCH           URL
           -------  ------  ------  -----  ------           ---
-           common       2       2  AD     main             git@github.com:markuskimius/common.git
+             core       2       2  AD     main             git@github.com:markuskimius/core.git
               dpm       1       1  D      main             git@github.com:markuskimius/dpm.git
         getopt-sh       2       1         master           git@github.com:markuskimius/getopt-sh.git
        profile-sh       1       3  D      main             git@github.com:markuskimius/profile-sh.git
@@ -102,7 +102,7 @@ if any package wants to get the list of packages.
 
 To activate a package, run:
 ```bash
-$ dpm activate common      # common is the package name
+$ dpm activate core      # core is the package name
 ```
 
 NUMREF shows the number of packages that depend on this package.
@@ -123,10 +123,10 @@ The following command shows any package that depends on the `getopt-sh` package:
 
 ```bash
 $ dpm deps getopt-sh
-* common
+* core
   +-- getopt-sh
 * profile-sh
-  +-- common
+  +-- core
       +-- getopt-sh
 ```
 
@@ -153,7 +153,7 @@ $ dpm cleanup
 To keep a package with NUMREF of 0 from being removed, direct-install it:
 
 ```
-$ dpm install common   # no need to specify URL if the package exists locally
+$ dpm install core   # no need to specify URL if the package exists locally
 ```
 
 ## Dependency
