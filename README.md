@@ -18,7 +18,7 @@ Clone `dpm` then evaluate the output of `dpm setup` from `.bashrc`:
 ```bash
 $ mkdir $HOME/dpm
 $ git -C $HOME/dpm clone https://github.com/markuskimius/dpm.git
-$ echo 'eval "$(bash --norc --noprofile "${HOME}/src/dpm/bin/dpm" setup)"' >> ~/.bashrc
+$ echo 'eval "$(bash --norc --noprofile "${HOME}/dpm/dpm/bin/dpm" setup)"' >> ~/.bashrc
 ```
 
 Then log out of the terminal session and log back in for the setup script to take effect.
