@@ -10,30 +10,24 @@ Dependencies a package requires are listed in one text file, `etc/dpm-deps`, in 
 If the package does not have this file and one cannot be added (e.g., you don't have access)
 then a meta package can be created that specifies the dependencies of the package.
 
+
 ## Installation
 
 Clone `dpm` then evaluate the output of `dpm setup` from `.bashrc`:
 
 ```bash
-$ mkdir $HOME/src
-$ git -C $HOME/src clone https://github.com/markuskimius/dpm.git
+$ mkdir $HOME/dpm
+$ git -C $HOME/dpm clone https://github.com/markuskimius/dpm.git
 $ echo 'eval "$(bash --norc --noprofile "${HOME}/src/dpm/bin/dpm" setup)"' >> ~/.bashrc
 ```
 
 Then log out of the terminal session and log back in for the setup script to take effect.
-
-Please note `$HOME/dpm` is a reserved directory (that's where the git packages are cloned)
-so do not clone `dpm` in `$HOME`.
-
-Optionally, after the initial install of dpm, dpm can be re-installed using dpm and the original install removed:
+It is also recommended to run the following command the first time logging back
+in to inform dpm that it was installed explicitly:
 
 ```bash
-$ dpm install https://github.com/markuskimius/dpm.git
-$ echo 'eval "$(bash --norc --noprofile "${HOME}/dpm/dpm/bin/dpm" setup)"' >> ~/.bashrc
-$ vim ~/.bashrc    # Remove the old eval line from ~/.bashrc
+$ dpm install dpm
 ```
-
-Then log out of the terminal session and log back in for the change to take effect.
 
 ## Basic Usage
 
