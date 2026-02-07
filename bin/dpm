@@ -1347,7 +1347,7 @@ EOF
         local pkgpath="${PKGDIR}/${pkgname}"
 
         [[ -d "${pkgpath}/bin"                   ]] && printf "%s\n" "PATH+=:${pkgpath}/bin" && path=1
-        [[ -e "${pkgpath}/lib/pkgIndex.tcl"      ]] && printf "%s\n" "TCLLIBPATH+=:${tclbase}/${pkgpath}/lib" && tclpath=1
+        [[ -e "${pkgpath}/lib/pkgIndex.tcl"      ]] && printf "%s\n" "TCLLIBPATH+=:${tclbase}${pkgpath}/lib" && tclpath=1
         compgen -G "${pkgpath}/lib/*.py" >/dev/null && printf "%s\n" "PYTHONPATH+=:${pkgpath}/lib" && pythonpath=1
     done
 
