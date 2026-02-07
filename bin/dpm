@@ -1323,6 +1323,7 @@ function deps-tree() {
 function dpm-setup() {
     local pkgname
     local path=0
+    local tclbase=""
     local tclpath=0
     local pythonpath=0
     local isok=1
@@ -1337,11 +1338,16 @@ function dpm-setup() {
 ##############################################################################
 EOF
 
+    # Tcl for Msys needs libpath in Windows format
+    case "$(uname -o)" in
+        Msys) tclbase="$(cmd //c echo /)";;
+    esac
+
     for pkgname in $(installed); do
         local pkgpath="${PKGDIR}/${pkgname}"
 
         [[ -d "${pkgpath}/bin"                   ]] && printf "%s\n" "PATH+=:${pkgpath}/bin" && path=1
-        [[ -e "${pkgpath}/lib/pkgIndex.tcl"      ]] && printf "%s\n" "TCLLIBPATH+=:${pkgpath}/lib" && tclpath=1
+        [[ -e "${pkgpath}/lib/pkgIndex.tcl"      ]] && printf "%s\n" "TCLLIBPATH+=:${tclbase}/${pkgpath}/lib" && tclpath=1
         compgen -G "${pkgpath}/lib/*.py" >/dev/null && printf "%s\n" "PYTHONPATH+=:${pkgpath}/lib" && pythonpath=1
     done
 
