@@ -41,7 +41,7 @@ COMMAND:
   cleanup               Delete any package installed as a dependency but is no
                         longer required.
 
-  list [-l,--long]      List installed packages.
+  list [-v,--verbose]   List installed packages.
 
   deps [PKGNAME]        Show the dependency tree of any direct installed
                         package that directly or indirectly depends on PKGNAME.
@@ -1119,20 +1119,20 @@ function dpm-cleanup() {
 
 function dpm-list() {
     local optstring
-    local long=0
+    local verbose=0
     local header=( "PKGNAME" "NUMREF" "HEIGHT" "FLAGS" )
     local format=""
     local isok=1
 
     # Parse arguments
-    optstring=$(egetopt "l" "long" "$@") || return 1
+    optstring=$(egetopt "v" "verbose" "$@") || return 1
     eval set -- "$optstring"
 
     while (( $# )); do
         [[ "$1" == "--" ]] && shift && break
 
         case "$1" in
-            -l|--long)  long=1 ;;
+            -v|--verbose)   verbose=1 ;;
         esac
 
         shift
@@ -1142,7 +1142,7 @@ function dpm-list() {
     (( $# )) && logger FAIL "Too many arguments" && return 1
 
     # Long option initialization
-    if (( long )); then
+    if (( verbose )); then
         header+=( "BRANCH" "URL" )
     fi
 
